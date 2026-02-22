@@ -1,0 +1,30 @@
+{
+    "permissions": {
+        "allow": [
+            "Bash(npm *)",
+            "Bash(npx *)",
+            "Bash(node *)",
+            "Bash(git *)",
+            "Bash(mkdir *)",
+            "Bash(cp *)",
+            "Bash(mv *)",
+            "Bash(rm *)",
+            "Bash(cat *)",
+            "Bash(ls *)",
+            "Bash(cd *)",
+            "Bash(echo *)",
+            "Bash(curl *)",
+            "Bash(pnpm *)",
+            "Edit(**/*.ts)",
+            "Edit(**/*.tsx)",
+            "Edit(**/*.js)",
+            "Edit(**/*.json)",
+            "Edit(**/*.md)",
+            "Edit(**/*.sql)",
+            "Edit(**/*.css)",
+            "Edit(**/*.env*)",
+            "Edit(**/Dockerfile)",
+            "Edit(**/*.toml)"
+        ]
+    }
+}

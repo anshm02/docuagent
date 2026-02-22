@@ -1,0 +1,9 @@
+export const MAX_SCREENS_DEFAULT = 50;
+export const SCREENSHOT_WIDTH = 1280;
+export const SCREENSHOT_HEIGHT = 800;
+export const PAGE_TIMEOUT_MS = 30_000;
+export const SETTLE_DELAY_MS = 1000;
+export const MODAL_DELAY_MS = 800;
+export const CONFIDENCE_THRESHOLD = 4;
+export const QUALITY_SCORE_MIN = 60;
+export const CONCURRENT_ANALYSIS_BATCH = 5;

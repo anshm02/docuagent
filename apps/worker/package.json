@@ -1,0 +1,33 @@
+{
+  "name": "@docuagent/worker",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "type-check": "tsc --noEmit",
+    "test-engines": "tsx src/test-engines.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@browserbasehq/stagehand": "^3.0.0",
+    "@supabase/supabase-js": "^2.49.0",
+    "docx": "^9.0.2",
+    "dotenv": "^16.4.0",
+    "express": "^4.21.0",
+    "mammoth": "^1.8.0",
+    "pdf-parse": "^1.1.1",
+    "playwright": "^1.49.0",
+    "sharp": "^0.33.0",
+    "@docuagent/shared": "*"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "@types/pdf-parse": "^1.1.4",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}
