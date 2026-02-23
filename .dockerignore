@@ -1,0 +1,10 @@
+node_modules
+.next
+dist
+.env
+.git
+*.md
+!CLAUDE.md
+.claude
+apps/web
+supabase

@@ -82,12 +82,12 @@ Check off each task as completed. Claude: update this file after completing each
 
 ## Phase 4: Orchestrator + API + Deploy
 
-- [ ] Build `orchestrator.ts` — coordinate all 6 stages, update status, handle partial failure, delete creds, set result
-- [ ] Build `index.ts` — Express server: POST /api/jobs, GET /api/jobs/:id, GET /health
-- [ ] Build `test-run.ts` — full end-to-end test script
-- [ ] **TEST**: test-run.ts → submit job → full pipeline → download .docx
+- [x] Build `orchestrator.ts` — coordinate all 6 stages, update status, handle partial failure, delete creds, set result
+- [x] Build `index.ts` — Express server: POST /api/jobs, GET /api/jobs/:id, GET /health
+- [x] Build `test-run.ts` — full end-to-end test script
+- [x] **TEST**: test-run.ts → submit job → full pipeline → download .docx
 - [ ] Test against 3+ different apps, fix everything
-- [ ] Write Dockerfile, deploy to Railway, set env vars
+- [x] Write Dockerfile, deploy to Railway, set env vars
 - [ ] **TEST**: curl deployed API, verify end-to-end
 
 ---
