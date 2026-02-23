@@ -86,16 +86,16 @@ Check off each task as completed. Claude: update this file after completing each
 - [x] Build `index.ts` — Express server: POST /api/jobs, GET /api/jobs/:id, GET /health
 - [x] Build `test-run.ts` — full end-to-end test script
 - [x] **TEST**: test-run.ts → submit job → full pipeline → download .docx
-- [ ] Test against 3+ different apps, fix everything
+- [x] Test against 3+ different apps, fix everything
 - [x] Write Dockerfile, deploy to Railway, set env vars
-- [ ] **TEST**: curl deployed API, verify end-to-end
+- [x] **TEST**: curl deployed API, verify end-to-end
 
 ---
 
 ## Phase 5: Frontend + Beta
 
-- [ ] Next.js + Tailwind + Supabase Auth setup
-- [ ] Login/signup, job creation (/new), job status (/jobs/[id]), dashboard
-- [ ] Wire to Railway API, deploy to Vercel
-- [ ] Landing page, test full flow
+- [x] Next.js + Tailwind + Supabase Auth setup
+- [x] Login/signup, job creation (/new), job status (/jobs/[id]), dashboard
+- [x] Wire to Railway API, deploy to Vercel
+- [x] Landing page, test full flow
 - [ ] Onboard beta users, $3 free credit, collect feedback
