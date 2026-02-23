@@ -1,10 +1,11 @@
 # DocuAgent Worker — Production Dockerfile
-# Single-stage build using tsx for TypeScript execution
+# Uses tsx to run TypeScript directly (no tsc build step)
 
 FROM node:22-slim
 
-# Install dependencies for Playwright/Chromium
+# Install dependencies for Playwright/Chromium + curl for healthcheck
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
     chromium \
     fonts-liberation \
     libnss3 \
@@ -36,8 +37,8 @@ COPY package.json package-lock.json turbo.json tsconfig.base.json ./
 COPY apps/worker/package.json apps/worker/tsconfig.json apps/worker/
 COPY packages/shared/package.json packages/shared/tsconfig.json packages/shared/
 
-# Install dependencies
-RUN npm ci --ignore-scripts
+# Install ALL dependencies (tsx is in dependencies, needed at runtime)
+RUN npm ci
 
 # Install Playwright browsers (just Chromium)
 RUN npx playwright install chromium || true
@@ -46,7 +47,7 @@ RUN npx playwright install chromium || true
 COPY packages/shared/ packages/shared/
 COPY apps/worker/src/ apps/worker/src/
 
-# Build shared package
+# Build shared package (needed for @docuagent/shared imports)
 RUN cd packages/shared && npx tsc || true
 
 # Expose port
@@ -56,5 +57,6 @@ EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
   CMD curl -f http://localhost:3001/health || exit 1
 
-# Start the worker using tsx (handles TypeScript directly)
-CMD ["npx", "tsx", "apps/worker/src/index.ts"]
+# Use npm start which runs: tsx src/index.ts
+WORKDIR /app/apps/worker
+CMD ["npm", "start"]
