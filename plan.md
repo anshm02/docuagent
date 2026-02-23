@@ -33,22 +33,22 @@ Check off each task as completed. Claude: update this file after completing each
 
 ## Phase 2: Crawl Engine
 
-- [ ] Set up `apps/worker/src/lib/stagehand.ts` — Stagehand v3 init + helpers
-- [ ] Build `engines/crawl.ts`:
-  - [ ] Authentication flow (observe form, fill creds, submit, verify)
-  - [ ] Journey execution loop (navigate, wait, screenshot 1280x800, extract DOM, upload to Supabase)
-  - [ ] Dynamic route parameter resolution (visit list views, extract entity IDs from links)
-  - [ ] Form filling during creation journeys (generate test data from code context, submit, capture entity ID)
-  - [ ] Modal interaction (click trigger, wait, screenshot, close)
-  - [ ] Tab interaction (click each tab, screenshot)
-  - [ ] Dropdown expansion (click, screenshot options)
-  - [ ] Stagehand nav discovery fallback (observe sidebar/nav when no code routes)
-  - [ ] Session expiry detection (redirect to login → re-auth)
-  - [ ] Error handling: 30s timeout per page, skip failures, continue
-  - [ ] Duplicate detection (DOM hash, skip >95% similarity)
-  - [ ] Progress broadcasting to Supabase Realtime
-  - [ ] 50 screen cap per job
-- [ ] **TEST**: Agent logs into a real staging app, walks through journeys, captures screenshots. Debug auth, navigation, interaction failures.
+- [x] Set up `apps/worker/src/lib/stagehand.ts` — Stagehand v3 init + helpers
+- [x] Build `engines/crawl.ts`:
+  - [x] Authentication flow (observe form, fill creds, submit, verify)
+  - [x] Journey execution loop (navigate, wait, screenshot 1280x800, extract DOM, upload to Supabase)
+  - [x] Dynamic route parameter resolution (visit list views, extract entity IDs from links)
+  - [x] Form filling during creation journeys (generate test data from code context, submit, capture entity ID)
+  - [x] Modal interaction (click trigger, wait, screenshot, close)
+  - [x] Tab interaction (click each tab, screenshot)
+  - [x] Dropdown expansion (click, screenshot options)
+  - [x] Stagehand nav discovery fallback (observe sidebar/nav when no code routes)
+  - [x] Session expiry detection (redirect to login → re-auth)
+  - [x] Error handling: 30s timeout per page, skip failures, continue
+  - [x] Duplicate detection (DOM hash, skip >95% similarity)
+  - [x] Progress broadcasting to Supabase Realtime
+  - [x] 50 screen cap per job
+- [x] **TEST**: Agent logs into a real staging app, walks through journeys, captures screenshots. Debug auth, navigation, interaction failures.
 
 ---
 
