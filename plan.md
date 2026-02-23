@@ -54,29 +54,29 @@ Check off each task as completed. Claude: update this file after completing each
 
 ## Phase 3: Screen Analysis + Document Generation
 
-- [ ] Build `engines/screen-analysis.ts` + `prompts/screen-analysis.ts`:
-  - [ ] Context assembly per screen (screenshot base64 + DOM + code_context + prd_summary + journey_context)
-  - [ ] Claude Vision call with multi-source prompt
-  - [ ] JSON response parsing + validation
-  - [ ] Parallel execution: batch 5 concurrent calls
-  - [ ] Store analysis in Supabase, compute confidence scores
-- [ ] Build `doc-components/design-tokens.ts` — colors, fonts, spacing
-- [ ] Build `doc-components/components.ts`:
-  - [ ] Headings (h1, h2, h3), paragraph, bullet list, numbered steps
-  - [ ] Screenshot embed (ImageRun, page width, max height)
-  - [ ] Field reference table, permission table
-  - [ ] Callout box (tip/warning), navigation path breadcrumb
-- [ ] Build `doc-components/templates.ts`:
-  - [ ] Cover page, TOC, journey section, screen reference, glossary, confidence appendix
-- [ ] Build `engines/doc-generator.ts` + prompts (`journey-prose.ts`, `cross-cutting.ts`):
-  - [ ] AI: journey guide prose per journey
-  - [ ] AI: cross-cutting (Quick Start, Navigation, Glossary, FAQ)
-  - [ ] AI: product overview
-  - [ ] Assembly: cover → TOC → overview → Quick Start → Navigation → Journey guides → Screen appendix → Glossary → FAQ → Confidence appendix
-  - [ ] Screenshot embedding (fetch, resize with sharp, embed)
-  - [ ] Upload .docx to Supabase Storage
-  - [ ] Quality score + auto-flagging
-- [ ] **TEST**: Generate complete .docx from captured data. Verify it opens and reads well.
+- [x] Build `engines/screen-analysis.ts` + `prompts/screen-analysis.ts`:
+  - [x] Context assembly per screen (screenshot base64 + DOM + code_context + prd_summary + journey_context)
+  - [x] Claude Vision call with multi-source prompt
+  - [x] JSON response parsing + validation
+  - [x] Parallel execution: batch 5 concurrent calls
+  - [x] Store analysis in Supabase, compute confidence scores
+- [x] Build `doc-components/design-tokens.ts` — colors, fonts, spacing
+- [x] Build `doc-components/components.ts`:
+  - [x] Headings (h1, h2, h3), paragraph, bullet list, numbered steps
+  - [x] Screenshot embed (ImageRun, page width, max height)
+  - [x] Field reference table, permission table
+  - [x] Callout box (tip/warning), navigation path breadcrumb
+- [x] Build `doc-components/templates.ts`:
+  - [x] Cover page, TOC, journey section, screen reference, glossary, confidence appendix
+- [x] Build `engines/doc-generator.ts` + prompts (`journey-prose.ts`, `cross-cutting.ts`):
+  - [x] AI: journey guide prose per journey
+  - [x] AI: cross-cutting (Quick Start, Navigation, Glossary, FAQ)
+  - [x] AI: product overview
+  - [x] Assembly: cover → TOC → overview → Quick Start → Navigation → Journey guides → Screen appendix → Glossary → FAQ → Confidence appendix
+  - [x] Screenshot embedding (fetch, resize with sharp, embed)
+  - [x] Upload .docx to Supabase Storage
+  - [x] Quality score + auto-flagging
+- [x] **TEST**: Generate complete .docx from captured data. Verify it opens and reads well.
 
 ---
 
