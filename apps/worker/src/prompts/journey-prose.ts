@@ -3,7 +3,18 @@ import type { ScreenAnalysis } from "@docuagent/shared";
 export function journeyProsePrompt(opts: {
   journeyTitle: string;
   journeyDescription: string;
-  screenAnalyses: { stepNum: number; navPath: string; analysis: ScreenAnalysis; screenshotRef: string }[];
+  screenAnalyses: {
+    stepNum: number;
+    navPath: string;
+    analysis: ScreenAnalysis;
+    screenshotRef: string;
+    codeContext?: Record<string, unknown> | null;
+  }[];
+  prdSummary?: {
+    product_purpose?: string;
+    main_features?: { name: string; description: string }[];
+    user_roles?: { role: string; description: string }[];
+  } | null;
 }): string {
   const analysesJson = opts.screenAnalyses.map((sa) => ({
     step_number: sa.stepNum,
@@ -14,41 +25,55 @@ export function journeyProsePrompt(opts: {
     overview: sa.analysis.overview_paragraph,
     fields: sa.analysis.fields,
     actions: sa.analysis.actions,
+    permissions: sa.analysis.permissions,
     tips: sa.analysis.tips,
-    troubleshooting: sa.analysis.troubleshooting,
+    code_context: sa.codeContext ?? null,
   }));
 
-  return `Given these screen analyses for the "${opts.journeyTitle}" workflow:
+  const prdBlock = opts.prdSummary
+    ? `\nPRODUCT CONTEXT (from PRD — use for business meaning in the intro):\n${JSON.stringify(opts.prdSummary, null, 2)}`
+    : "";
+
+  return `You are writing a single markdown documentation page for the "${opts.journeyTitle}" workflow.
 
 JOURNEY DESCRIPTION: ${opts.journeyDescription}
+${prdBlock}
 
-SCREEN ANALYSES:
+SCREEN ANALYSES (each represents one screen the user sees):
 ${JSON.stringify(analysesJson, null, 2)}
-
-Write documentation for this workflow in a clear, professional style.
 
 Return a JSON object with this exact schema:
 {
-  "overview": "string — 1 paragraph overview of this workflow",
+  "title": "string — action-oriented title, e.g. 'Create a New Project'",
+  "intro": "string — 2-3 sentences MAX. Reference business purpose from PRD if available. No filler.",
+  "how_to_get_there": "string — one sentence, e.g. 'From the sidebar, click **Projects**.'",
   "steps": [
     {
-      "heading": "string — step heading, e.g. 'Step 1: Navigate to Settings'",
-      "body": "string — detailed instructions for this step. Reference the screenshot using the screenshot_ref value like 'As shown in Figure X'. Include field descriptions and tips inline.",
-      "screenshot_ref": "string — the screenshot reference ID for this step"
+      "action": "string — ONE action. Bold UI elements with **double asterisks**. e.g. 'Click **New Project**.'",
+      "detail": "string or null — optional extra context (max 1 sentence)"
     }
   ],
-  "tips": ["string — workflow-specific tips"],
-  "troubleshooting": ["string — common issues and solutions for this workflow"]
+  "permission_notes": ["string — e.g. 'Only **Owner** role users can create projects.' Include ONLY if permissions data exists."],
+  "fields": [
+    {
+      "label": "string — field label as seen in UI",
+      "type": "string — field type (text, email, dropdown, checkbox, etc.)",
+      "required": true/false,
+      "description": "string — include validation rules from code_context if available"
+    }
+  ],
+  "tips": ["string — practical, specific tips. Max 3."],
+  "related_slugs": ["string — kebab-case slugs of related journeys if known"]
 }
 
-RULES:
-- Write for end-users, not developers
-- Be specific about what to click, what to type, where to look
-- Reference screenshots naturally in the text (e.g., "as shown in the figure below")
-- Include field descriptions within the step body where relevant
-- Each step should correspond to one screen/action
-- Tips should be practical and specific to this workflow
-- Include at least 2 tips and 2 troubleshooting items
+CRITICAL RULES:
+- Intro: 2-3 sentences MAX. Reference WHY this workflow matters using PRD context.
+- Steps: ONE action per item. Bold all UI element names: **Button**, **Field Name**, **Menu Item**.
+- Fields: merge code_context validation/types with screen analysis. Include validation rules like "max 50 characters" or "valid email format".
+- Permission notes: ONLY include if permissions data exists in the screen analyses.
+- BANNED phrases (never use): "This page displays", "You'll see", "Here you can", "This is designed to", "As shown above", "As you can see"
+- Write for end-users, not developers.
+- If code_context has field validation rules, include them in the field descriptions.
 
 Return ONLY valid JSON. No markdown, no explanation, no backticks.`;
 }

@@ -72,14 +72,14 @@ Check off each task as completed. Claude: update this file immediately after com
 ## Phase 2: Markdown Documentation Output
 
 ### Replace .docx with Markdown
-- [ ] Create `engines/markdown-generator.ts` (keep old doc-generator.ts as reference)
-- [ ] Output folder structure: docs/ with index.md, quick-start.md, navigation.md, one .md per journey, glossary.md, images/ directory
-- [ ] Each .md uses relative image refs: `![Description](./images/filename.png)`
-- [ ] Upload all files to Supabase Storage under `jobs/{job_id}/docs/`
-- [ ] Generate .zip of entire docs/ folder, upload to Supabase Storage
+- [x] Create `engines/markdown-generator.ts` (keep old doc-generator.ts as reference)
+- [x] Output folder structure: docs/ with index.md, quick-start.md, navigation.md, one .md per journey, glossary.md, images/ directory
+- [x] Each .md uses relative image refs: `![Description](./images/filename.png)`
+- [x] Upload all files to Supabase Storage under `jobs/{job_id}/docs/`
+- [x] Generate .zip of entire docs/ folder, upload to Supabase Storage
 
 ### Linear Docs style — concise, image-first
-- [ ] Rewrite `prompts/journey-prose.ts` to produce markdown:
+- [x] Rewrite `prompts/journey-prose.ts` to produce markdown:
   - Title (action-oriented)
   - 2-3 sentence intro MAX
   - Hero screenshot (markdown image syntax)
@@ -89,31 +89,31 @@ Check off each task as completed. Claude: update this file immediately after com
   - Field table only if page has form fields
   - Related links
   - BANNED: "This page displays", "You'll see", "Here you can", "This is designed to"
-- [ ] Rewrite `prompts/cross-cutting.ts` for markdown:
+- [x] Rewrite `prompts/cross-cutting.ts` for markdown:
   - quick-start.md: 5 short steps
   - navigation.md: brief app layout description
   - glossary.md: only if terms genuinely need defining
-- [ ] Include code analysis insights in documentation where valuable:
+- [x] Include code analysis insights in documentation where valuable:
   - Field validation rules (from code) appear in field tables
   - Permission requirements (from code) noted in steps
   - API details NOT included (end-user docs, not developer docs)
-- [ ] Include PRD context where valuable:
+- [x] Include PRD context where valuable:
   - Product overview uses PRD description
   - Journey intros reference business purpose from PRD
   - Glossary includes PRD terminology
-- [ ] Generate index.md with table of contents linking all sections
-- [ ] **TEST**: Generate markdown for test app. Print index.md + one journey file. Verify Linear docs style. Verify code analysis data enriches field descriptions. Verify PRD enriches overview.
+- [x] Generate index.md with table of contents linking all sections
+- [x] **TEST**: Generate markdown for test app. Print index.md + one journey file. Verify Linear docs style. Verify code analysis data enriches field descriptions. Verify PRD enriches overview.
 
 ### Browser docs viewer
-- [ ] Install react-markdown, remark-gfm, @tailwindcss/typography in apps/web
-- [ ] Create `/jobs/[id]/docs/page.tsx`
-- [ ] Left sidebar: clickable section list from index.md links
-- [ ] Main content: rendered markdown with react-markdown + remark-gfm
-- [ ] Tailwind Typography prose styling — clean, readable, like Linear docs
-- [ ] Images inline from Supabase Storage URLs
-- [ ] Header: app name + "Download .zip" button
-- [ ] Update job result: docs_url + zip_url (remove old doc_url)
-- [ ] **TEST**: Verify docs render with sidebar nav. Images display. Download works. Take screenshot.
+- [x] Install react-markdown, remark-gfm, @tailwindcss/typography in apps/web
+- [x] Create `/jobs/[id]/docs/page.tsx`
+- [x] Left sidebar: clickable section list from index.md links
+- [x] Main content: rendered markdown with react-markdown + remark-gfm
+- [x] Tailwind Typography prose styling — clean, readable, like Linear docs
+- [x] Images inline from Supabase Storage URLs
+- [x] Header: app name + "Download .zip" button
+- [x] Update job result: docs_url + zip_url (remove old doc_url)
+- [x] **TEST**: Verify docs render with sidebar nav. Images display. Download works. Take screenshot.
 
 ---
 

@@ -12,7 +12,7 @@ import { runDiscoveryCrawl } from "./engines/discovery-crawl.js";
 import { runJourneyPlanner } from "./engines/journey-planner.js";
 import { runCrawl } from "./engines/crawl.js";
 import { runScreenAnalysis } from "./engines/screen-analysis.js";
-import { runDocGenerator } from "./engines/doc-generator.js";
+import { runMarkdownGenerator } from "./engines/markdown-generator.js";
 import {
   checkUserCredits,
   estimateCost,
@@ -570,7 +570,7 @@ export async function runPipeline(jobId: string): Promise<void> {
     await broadcastProgress(jobId, "info", "Generating documentation...");
 
     try {
-      const docResult = await runDocGenerator({
+      const mdResult = await runMarkdownGenerator({
         jobId,
         appName,
         prdSummary,
@@ -585,17 +585,17 @@ export async function runPipeline(jobId: string): Promise<void> {
 
       // Update job with final result
       const totalDurationSeconds = Math.round((Date.now() - startTime) / 1000);
-      const journeysCompleted = journeys.length; // TODO: track actual completion per journey
+      const journeysCompleted = journeys.length;
 
       await supabase
         .from("jobs")
         .update({
           status: "completed",
           result: {
-            docs_url: docResult.docUrl,
-            zip_url: docResult.docUrl, // same for now, will be different when zip is separate
-            total_screens: docResult.totalScreens,
-            avg_confidence: docResult.avgConfidence,
+            docs_url: `/jobs/${jobId}/docs`,
+            zip_url: mdResult.zipUrl,
+            total_screens: mdResult.totalScreens,
+            avg_confidence: mdResult.avgConfidence,
             duration_seconds: totalDurationSeconds,
             journeys_completed: journeysCompleted,
             journeys_total: journeys.length + additionalJourneys.length,
@@ -610,17 +610,18 @@ export async function runPipeline(jobId: string): Promise<void> {
       await broadcastProgress(
         jobId,
         "complete",
-        `Documentation generated! ${docResult.totalScreens} screens, ${docResult.sections.length} sections, ${(docResult.fileSizeBytes / 1024).toFixed(0)} KB. Cost: ${formatCostCents(actualCostCents)}`,
+        `Documentation generated! ${mdResult.totalScreens} screens, ${mdResult.sections.length} sections, ${mdResult.screenshotCount} screenshots. Cost: ${formatCostCents(actualCostCents)}`,
       );
 
       console.log(`\n[orchestrator] ════════════════════════════════════════`);
       console.log(`[orchestrator] PIPELINE COMPLETE`);
       console.log(`[orchestrator] Duration: ${totalDurationSeconds}s`);
-      console.log(`[orchestrator] Screens: ${docResult.totalScreens}`);
-      console.log(`[orchestrator] Doc size: ${(docResult.fileSizeBytes / 1024).toFixed(1)} KB`);
-      console.log(`[orchestrator] Quality: ${docResult.avgConfidence}/5 avg confidence`);
+      console.log(`[orchestrator] Screens: ${mdResult.totalScreens}`);
+      console.log(`[orchestrator] Screenshots: ${mdResult.screenshotCount}`);
+      console.log(`[orchestrator] Quality: ${mdResult.avgConfidence}/5 avg confidence`);
       console.log(`[orchestrator] Cost: ${formatCostCents(actualCostCents)}`);
-      console.log(`[orchestrator] Download: ${docResult.docUrl}`);
+      console.log(`[orchestrator] Docs: /jobs/${jobId}/docs`);
+      console.log(`[orchestrator] Zip: ${mdResult.zipUrl}`);
       console.log(`[orchestrator] ════════════════════════════════════════\n`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

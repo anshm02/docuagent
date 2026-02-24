@@ -137,6 +137,37 @@ export interface CrossCuttingContent {
   faq: { question: string; answer: string }[];
 }
 
+// --- Markdown Document Generation (Stage 7 V2) ---
+
+export interface MarkdownJourneyContent {
+  title: string;
+  slug: string;
+  intro: string;
+  how_to_get_there: string;
+  steps: {
+    action: string;
+    detail?: string;
+  }[];
+  permission_notes: string[];
+  fields: {
+    label: string;
+    type: string;
+    required: boolean;
+    description: string;
+  }[];
+  tips: string[];
+  related: { title: string; slug: string }[];
+  hero_screenshot_ref: string;
+  step_screenshot_refs: string[];
+}
+
+export interface MarkdownCrossCutting {
+  quick_start_steps: string[];
+  navigation_description: string;
+  glossary: { term: string; definition: string }[];
+  product_overview: string;
+}
+
 // --- Database Records ---
 
 export type JobStatus =

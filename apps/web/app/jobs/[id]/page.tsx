@@ -26,10 +26,16 @@ interface JobData {
   };
   quality_score: number | null;
   result: {
-    doc_url: string;
+    docs_url: string;
+    zip_url: string;
     total_screens: number;
     avg_confidence: number;
     duration_seconds: number;
+    journeys_completed: number;
+    journeys_total: number;
+    estimated_cost_cents: number;
+    actual_cost_cents: number;
+    additional_journeys?: { title: string; description: string }[];
   } | null;
   error: string | null;
   started_at: string | null;
@@ -202,51 +208,59 @@ export default function JobStatusPage() {
               </h1>
               <p className="text-sm text-gray-500 mt-1">{job.app_url}</p>
             </div>
-            {isCompleted && job.result?.doc_url && (
-              <a
-                href={job.result.doc_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 bg-blue-600 text-white rounded-md px-4 py-2 text-sm font-medium hover:bg-blue-700 transition-colors"
-              >
-                <svg
-                  className="w-4 h-4"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
+            {isCompleted && job.result && (
+              <div className="flex items-center gap-2">
+                <Link
+                  href={`/jobs/${id}/docs`}
+                  className="inline-flex items-center gap-2 bg-blue-600 text-white rounded-md px-4 py-2 text-sm font-medium hover:bg-blue-700 transition-colors"
                 >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                  />
-                </svg>
-                Download .docx
-              </a>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  View Documentation
+                </Link>
+                {job.result.zip_url && (
+                  <a
+                    href={job.result.zip_url}
+                    download
+                    className="inline-flex items-center gap-2 bg-gray-100 text-gray-700 rounded-md px-4 py-2 text-sm font-medium hover:bg-gray-200 transition-colors"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    .zip
+                  </a>
+                )}
+              </div>
             )}
           </div>
 
           {/* Stats row for completed jobs */}
           {isCompleted && job.result && (
-            <div className="mt-4 grid grid-cols-3 gap-4">
+            <div className="mt-4 grid grid-cols-4 gap-4">
               <div className="bg-gray-50 rounded-md p-3 text-center">
                 <p className="text-2xl font-bold text-gray-900">
                   {job.result.total_screens}
                 </p>
-                <p className="text-xs text-gray-500">Screens Documented</p>
+                <p className="text-xs text-gray-500">Screens</p>
+              </div>
+              <div className="bg-gray-50 rounded-md p-3 text-center">
+                <p className="text-2xl font-bold text-gray-900">
+                  {job.result.journeys_completed}/{job.result.journeys_total}
+                </p>
+                <p className="text-xs text-gray-500">Journeys</p>
               </div>
               <div className="bg-gray-50 rounded-md p-3 text-center">
                 <p className="text-2xl font-bold text-gray-900">
                   {job.quality_score ?? "—"}%
                 </p>
-                <p className="text-xs text-gray-500">Quality Score</p>
+                <p className="text-xs text-gray-500">Quality</p>
               </div>
               <div className="bg-gray-50 rounded-md p-3 text-center">
                 <p className="text-2xl font-bold text-gray-900">
-                  {formatDuration(job.result.duration_seconds)}
+                  ${((job.result.actual_cost_cents ?? 0) / 100).toFixed(2)}
                 </p>
-                <p className="text-xs text-gray-500">Duration</p>
+                <p className="text-xs text-gray-500">Cost</p>
               </div>
             </div>
           )}

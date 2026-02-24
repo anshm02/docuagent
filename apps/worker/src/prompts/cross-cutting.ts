@@ -1,45 +1,38 @@
-import type { ScreenAnalysis, PRDSummary } from "@docuagent/shared";
+import type { PRDSummary } from "@docuagent/shared";
 
 export function crossCuttingPrompt(opts: {
   appName: string;
   screenIndex: { pageTitle: string; purpose: string; navigationPath: string }[];
   prdSummary: PRDSummary | null;
 }): string {
-  return `Given this application overview for "${opts.appName}":
+  return `Generate cross-cutting documentation content for "${opts.appName}".
 
-ALL SCREENS:
+ALL SCREENS IN THE APP:
 ${JSON.stringify(opts.screenIndex, null, 2)}
 
-${opts.prdSummary ? `PRODUCT CONTEXT:\n${JSON.stringify(opts.prdSummary, null, 2)}` : ""}
+${opts.prdSummary ? `PRODUCT CONTEXT (from PRD):\n${JSON.stringify(opts.prdSummary, null, 2)}` : ""}
 
-Generate cross-cutting documentation content as JSON:
+Return a JSON object:
 {
-  "quick_start": {
-    "steps": [
-      "string — step-by-step quick start instructions (first login, first key action, etc.)"
-    ]
-  },
-  "navigation_guide": "string — describe the app's navigation structure (sidebar, top nav, main content area). Written as 2-3 paragraphs.",
+  "quick_start_steps": [
+    "string — 5 steps max. Each step is ONE action. Bold UI elements with **double asterisks**."
+  ],
+  "navigation_description": "string — 2-3 sentences describing the app layout (sidebar, top nav, main content). Concise.",
   "glossary": [
     {
-      "term": "string — key term used in the app",
-      "definition": "string — clear definition for end-users"
+      "term": "string — key term",
+      "definition": "string — 1 sentence definition for end-users"
     }
   ],
-  "faq": [
-    {
-      "question": "string — common question about the app",
-      "answer": "string — clear, helpful answer"
-    }
-  ]
+  "product_overview": "string — 2-3 sentences about what the product does and who it's for. Use PRD context if available."
 }
 
 RULES:
-- Quick start should have 3-5 steps that get a new user productive fast
-- Navigation guide should describe the actual layout visible in the screenshots
-- Glossary should include 5-10 key terms from the app
-- FAQ should include 5-8 common questions and answers
-- Write everything for end-users, not developers
+- quick_start_steps: exactly 5 steps. First step is always login. Last step should be a core action.
+- navigation_description: describe ONLY what's visible. No speculation.
+- glossary: include terms from PRD terminology if available. Only include terms that genuinely need defining. If nothing needs defining, return empty array.
+- product_overview: use PRD product_purpose and target_users if available. Professional tone.
+- BANNED phrases: "This page displays", "You'll see", "Here you can", "This is designed to"
 
 Return ONLY valid JSON. No markdown, no explanation, no backticks.`;
 }
