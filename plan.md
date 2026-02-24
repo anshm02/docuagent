@@ -1,101 +1,163 @@
-# DocuAgent Build Plan
+# DocuAgent V2 Build Plan
 
-Check off each task as completed. Claude: update this file after completing each item.
-
----
-
-## Phase 1: Setup + Analysis Engines
-
-- [x] Initialize Turborepo monorepo: `apps/web`, `apps/worker`, `packages/shared`
-- [x] Configure root `tsconfig.base.json` and per-app tsconfig files
-- [x] Set up `packages/shared/types.ts` with all TypeScript interfaces
-- [x] Create Supabase migration (`supabase/migrations/001_initial_schema.sql`) with all tables + RLS
-- [x] Set up `apps/worker/src/lib/supabase.ts` — Supabase client with service role key
-- [x] Set up `apps/worker/src/lib/claude.ts` — Anthropic SDK wrapper (text + vision calls)
-- [x] Set up `apps/worker/src/lib/github.ts` — GitHub API client (fetch tree, fetch file)
-- [x] Build `engines/code-analysis.ts` + `prompts/code-analysis.ts`:
-  - [x] Fetch repo tree via GitHub API
-  - [x] Framework detection (parse package.json)
-  - [x] Next.js App Router route extraction (find page.tsx files)
-  - [x] React Router route extraction (send config to Claude)
-  - [x] Component analysis (send source to Claude, parse JSON)
-  - [x] Compile CrawlPlan JSON
-  - [x] Fallback: return empty plan if no repo or <5 routes
-- [x] Build `engines/prd-analysis.ts` + `prompts/prd-summary.ts`:
-  - [ ] File parsers: mammoth (docx), pdf-parse (pdf), raw (txt/md)
-  - [x] Single Claude call → PRDSummary JSON
-- [x] Build `engines/journey-planner.ts` + `prompts/journey-planning.ts`:
-  - [x] Send CrawlPlan + PRDSummary to Claude
-  - [x] Parse Journey[] response, sort by priority (creation first)
-- [x] **TEST**: Run all three engines against a real GitHub repo + sample PRD. Verify crawl plan, PRD summary, and journey plan output.
+Check off each task as completed. Claude: update this file immediately after completing and testing each item. Commit after every 3-4 items.
 
 ---
 
-## Phase 2: Crawl Engine
+## Phase 1: Pipeline Fixes + Cost Budgeting
 
-- [x] Set up `apps/worker/src/lib/stagehand.ts` — Stagehand v3 init + helpers
-- [x] Build `engines/crawl.ts`:
-  - [x] Authentication flow (observe form, fill creds, submit, verify)
-  - [x] Journey execution loop (navigate, wait, screenshot 1280x800, extract DOM, upload to Supabase)
-  - [x] Dynamic route parameter resolution (visit list views, extract entity IDs from links)
-  - [x] Form filling during creation journeys (generate test data from code context, submit, capture entity ID)
-  - [x] Modal interaction (click trigger, wait, screenshot, close)
-  - [x] Tab interaction (click each tab, screenshot)
-  - [x] Dropdown expansion (click, screenshot options)
-  - [x] Stagehand nav discovery fallback (observe sidebar/nav when no code routes)
-  - [x] Session expiry detection (redirect to login → re-auth)
-  - [x] Error handling: 30s timeout per page, skip failures, continue
-  - [x] Duplicate detection (DOM hash, skip >95% similarity)
-  - [x] Progress broadcasting to Supabase Realtime
-  - [x] 50 screen cap per job
-- [x] **TEST**: Agent logs into a real staging app, walks through journeys, captures screenshots. Debug auth, navigation, interaction failures.
+### Model Upgrade
+- [x] Update ALL Claude API calls to use `claude-sonnet-4-6` (was `claude-sonnet-4-5-20250514`). Update in lib/claude.ts, all prompt files, and Stagehand config.
+- [x] **TEST**: Verify API calls work with the new model string.
+
+### Journey Timing — Plan AFTER seeing the app
+- [x] Add 'discovering' status to job status enum
+- [x] Build discovery crawl: after login, visit each code analysis route quickly (5s max per page). For each route capture: URL, page title, isAccessible, hasError, hasForm, hasTable, navElements. No Claude calls. Store as DiscoveryResult[].
+- [x] Update journey planner to accept DiscoveryResult[] — only plan journeys for accessible, error-free pages
+- [x] Update orchestrator flow: code analysis → PRD analysis → login → discovery → plan journeys → execute → analyze → generate
+- [x] **TEST**: Verify discovery correctly identifies broken pages. Verify journeys exclude error pages.
+
+### Cost Budget System
+- [x] Add `credits` column (integer, default 300 = $3.00 in cents) to profiles table in Supabase
+- [x] Before journey planning: estimate total job cost based on discovered screen count
+  - Formula: (screens × $0.03 per screen analysis) + (journeys × $0.08 per journey prose) + ($0.30 fixed for cross-cutting + overview) + ($0.30-0.90 for code analysis)
+  - If estimated cost > user's remaining credits: reduce number of journeys to fit budget
+  - Pick the highest-value journeys (creation journeys + main CRUD flows) that fit within budget
+- [x] Cap: maximum 3-4 journeys for free tier, covering ~15-20 screens max. This keeps runs under $3.
+- [x] For apps with 100+ pages: only document the first 3-4 core journeys. Show the user what other journeys COULD be documented (as a locked/upgrade list) but don't execute them.
+- [x] After job completes: deduct actual API cost from user credits. Store actual_cost on job record.
+- [x] Before starting a job: check if user has credits > 0. If not, return error "No credits remaining."
+- [x] Broadcast budget info: "Estimated cost: $X.XX for Y journeys (Z screens). Credits remaining: $X.XX"
+- [x] **TEST**: Verify cost estimation is within 20% of actual cost. Verify credit deduction works.
+
+### Analysis Visibility — Show the Value
+- [x] After code analysis: broadcast detailed summary to progress feed AND store on job record:
+  - "Code Analysis Complete:"
+  - "  Framework: Next.js App Router"
+  - "  Routes found: 12"
+  - "  Components analyzed: 8"
+  - "  Form fields extracted: 24 across 5 forms"
+  - "  Permissions detected: 3 role-based checks"
+  - "  API endpoints: 6"
+  - Show each route path found
+- [x] After PRD analysis: broadcast detailed summary:
+  - "PRD Analysis Complete:"
+  - "  Product: [name]"
+  - "  Target users: [list]"
+  - "  Features identified: [count] — [list names]"
+  - "  Workflows mapped: [count] — [list names]"
+  - "  User roles: [list]"
+  - "  Terminology: [count] terms"
+  - If no PRD provided: "No PRD provided — documentation will be based on code analysis and visual observation only."
+- [x] After discovery: broadcast what the agent actually saw:
+  - "Discovery Complete — [X] accessible pages, [Y] had errors (skipped)"
+  - For each accessible page: one-line summary
+- [x] After journey planning: broadcast ALL planned journeys with reasoning:
+  - "Documentation Plan — [X] journeys within $Y.YY budget:"
+  - For each: "  [priority]. [title] ([step count] steps) — [one-line description]"
+  - If journeys were cut for budget: "  Note: [Z] additional journeys available with more credits"
+  - Store in jobs.journeys field
+- [x] **TEST**: Run pipeline. Verify all summaries appear in progress feed. Verify code analysis shows real extracted data. Verify PRD shows extracted features.
+
+### Journey Execution — Stop Skipping
+- [x] Journey start: broadcast "Starting journey: [title] ([X] steps)"
+- [x] Each step: broadcast "Journey [title] — Step X/Y: [action description]"
+- [x] Step failure: broadcast "Step X failed: [error]. Continuing to next step."
+- [x] Journey end: broadcast "Journey [title] complete: X/Y steps succeeded"
+- [x] Never silently skip. Always explain what happened.
+- [x] **TEST**: Run pipeline. Verify every journey has step-by-step logging. Zero silent skips.
 
 ---
 
-## Phase 3: Screen Analysis + Document Generation
+## Phase 2: Markdown Documentation Output
 
-- [x] Build `engines/screen-analysis.ts` + `prompts/screen-analysis.ts`:
-  - [x] Context assembly per screen (screenshot base64 + DOM + code_context + prd_summary + journey_context)
-  - [x] Claude Vision call with multi-source prompt
-  - [x] JSON response parsing + validation
-  - [x] Parallel execution: batch 5 concurrent calls
-  - [x] Store analysis in Supabase, compute confidence scores
-- [x] Build `doc-components/design-tokens.ts` — colors, fonts, spacing
-- [x] Build `doc-components/components.ts`:
-  - [x] Headings (h1, h2, h3), paragraph, bullet list, numbered steps
-  - [x] Screenshot embed (ImageRun, page width, max height)
-  - [x] Field reference table, permission table
-  - [x] Callout box (tip/warning), navigation path breadcrumb
-- [x] Build `doc-components/templates.ts`:
-  - [x] Cover page, TOC, journey section, screen reference, glossary, confidence appendix
-- [x] Build `engines/doc-generator.ts` + prompts (`journey-prose.ts`, `cross-cutting.ts`):
-  - [x] AI: journey guide prose per journey
-  - [x] AI: cross-cutting (Quick Start, Navigation, Glossary, FAQ)
-  - [x] AI: product overview
-  - [x] Assembly: cover → TOC → overview → Quick Start → Navigation → Journey guides → Screen appendix → Glossary → FAQ → Confidence appendix
-  - [x] Screenshot embedding (fetch, resize with sharp, embed)
-  - [x] Upload .docx to Supabase Storage
-  - [x] Quality score + auto-flagging
-- [x] **TEST**: Generate complete .docx from captured data. Verify it opens and reads well.
+### Replace .docx with Markdown
+- [ ] Create `engines/markdown-generator.ts` (keep old doc-generator.ts as reference)
+- [ ] Output folder structure: docs/ with index.md, quick-start.md, navigation.md, one .md per journey, glossary.md, images/ directory
+- [ ] Each .md uses relative image refs: `![Description](./images/filename.png)`
+- [ ] Upload all files to Supabase Storage under `jobs/{job_id}/docs/`
+- [ ] Generate .zip of entire docs/ folder, upload to Supabase Storage
+
+### Linear Docs style — concise, image-first
+- [ ] Rewrite `prompts/journey-prose.ts` to produce markdown:
+  - Title (action-oriented)
+  - 2-3 sentence intro MAX
+  - Hero screenshot (markdown image syntax)
+  - "How to get there" — navigation from sidebar/home
+  - Numbered steps — ONE action per line, **bold** UI elements
+  - Optional tip as blockquote
+  - Field table only if page has form fields
+  - Related links
+  - BANNED: "This page displays", "You'll see", "Here you can", "This is designed to"
+- [ ] Rewrite `prompts/cross-cutting.ts` for markdown:
+  - quick-start.md: 5 short steps
+  - navigation.md: brief app layout description
+  - glossary.md: only if terms genuinely need defining
+- [ ] Include code analysis insights in documentation where valuable:
+  - Field validation rules (from code) appear in field tables
+  - Permission requirements (from code) noted in steps
+  - API details NOT included (end-user docs, not developer docs)
+- [ ] Include PRD context where valuable:
+  - Product overview uses PRD description
+  - Journey intros reference business purpose from PRD
+  - Glossary includes PRD terminology
+- [ ] Generate index.md with table of contents linking all sections
+- [ ] **TEST**: Generate markdown for test app. Print index.md + one journey file. Verify Linear docs style. Verify code analysis data enriches field descriptions. Verify PRD enriches overview.
+
+### Browser docs viewer
+- [ ] Install react-markdown, remark-gfm, @tailwindcss/typography in apps/web
+- [ ] Create `/jobs/[id]/docs/page.tsx`
+- [ ] Left sidebar: clickable section list from index.md links
+- [ ] Main content: rendered markdown with react-markdown + remark-gfm
+- [ ] Tailwind Typography prose styling — clean, readable, like Linear docs
+- [ ] Images inline from Supabase Storage URLs
+- [ ] Header: app name + "Download .zip" button
+- [ ] Update job result: docs_url + zip_url (remove old doc_url)
+- [ ] **TEST**: Verify docs render with sidebar nav. Images display. Download works. Take screenshot.
 
 ---
 
-## Phase 4: Orchestrator + API + Deploy
+## Phase 3: Frontend UI Overhaul
 
-- [x] Build `orchestrator.ts` — coordinate all 6 stages, update status, handle partial failure, delete creds, set result
-- [x] Build `index.ts` — Express server: POST /api/jobs, GET /api/jobs/:id, GET /health
-- [x] Build `test-run.ts` — full end-to-end test script
-- [x] **TEST**: test-run.ts → submit job → full pipeline → download .docx
-- [x] Test against 3+ different apps, fix everything
-- [x] Write Dockerfile, deploy to Railway, set env vars
-- [x] **TEST**: curl deployed API, verify end-to-end
+### Auth simplification
+- [ ] Single /login page: email + password, toggle "Sign in" / "Create account"
+- [ ] On signup: auto-create profile with 300 credits ($3.00)
+- [ ] After auth: redirect to /new
+- [ ] Remove /dashboard (redirect to /new)
+
+### Generate page (/new)
+- [ ] Required fields: App URL, Login URL, Username, Password
+- [ ] Optional collapsed section: GitHub URL, PRD upload, Product Description
+- [ ] Localhost detection: yellow callout with ngrok instructions
+- [ ] Show remaining credits: "$X.XX remaining"
+- [ ] If completed job exists: banner "Your last docs are ready → View"
+
+### Progress page (/jobs/[id]) overhaul
+- [ ] Top: large current status text + pulsing animation
+- [ ] Show code analysis summary when complete (what was extracted)
+- [ ] Show PRD summary when complete (what was understood)
+- [ ] Show discovery summary (accessible pages found)
+- [ ] Show journey plan card: all planned journeys with step counts. Note if any journeys were cut for budget. Checkmarks on completion.
+- [ ] Show budget: "Estimated: $X.XX / Credits: $X.XX remaining"
+- [ ] Activity feed: larger screenshots, grouped by journey, color-coded
+- [ ] Completion: "Documentation Ready!" + "View Documentation →" button + "Download .zip" + stats + actual cost
+
+### Landing page (/)
+- [ ] Hero: "End-user documentation for your SaaS, generated in minutes"
+- [ ] Subtext + one CTA: "Get Started Free →"
+- [ ] "How it works" — 3 steps
+- [ ] Nothing else. Minimal.
+- [ ] **TEST**: Full flow walkthrough with screenshots of every page.
 
 ---
 
-## Phase 5: Frontend + Beta
+## Phase 4: Test + Deploy
 
-- [x] Next.js + Tailwind + Supabase Auth setup
-- [x] Login/signup, job creation (/new), job status (/jobs/[id]), dashboard
-- [x] Wire to Railway API, deploy to Vercel
-- [x] Landing page, test full flow
-- [ ] Onboard beta users, $3 free credit, collect feedback
+- [ ] Full pipeline test against SaaS Starter
+- [ ] Verify credit system works (starts at $3, deducts after job)
+- [ ] Verify markdown output quality
+- [ ] Verify docs viewer renders correctly
+- [ ] Fix issues
+- [ ] Commit, push, Railway + Vercel auto-deploy
+- [ ] Test deployed version end-to-end
+- [ ] **MILESTONE**: V2 in production

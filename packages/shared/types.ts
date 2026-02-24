@@ -48,7 +48,32 @@ export interface PRDSummary {
   terminology: { term: string; definition: string }[];
 }
 
-// --- Journey Planning (Stage 3) ---
+// --- Discovery Crawl (Stage 3 — V2) ---
+
+export interface DiscoveryResult {
+  route: string;
+  actualUrl: string;
+  pageTitle: string;
+  isAccessible: boolean;
+  hasForm: boolean;
+  hasTable: boolean;
+  hasError: boolean;
+  navElements: string[];
+  screenshotUrl: string;
+}
+
+// --- Cost Budget System (V2) ---
+
+export interface CostEstimate {
+  screens_estimated: number;
+  journeys_planned: number;
+  journeys_available: number;
+  estimated_cost_cents: number;
+  user_credits_cents: number;
+  journeys_cut_for_budget: number;
+}
+
+// --- Journey Planning (Stage 4) ---
 
 export interface JourneyStep {
   action: string; // human-readable: "Navigate to Projects page"
@@ -66,7 +91,12 @@ export interface Journey {
   steps: JourneyStep[];
 }
 
-// --- Screen Analysis (Stage 5) ---
+export interface JourneyPlanResult {
+  planned: Journey[];
+  additional: { title: string; description: string }[];
+}
+
+// --- Screen Analysis (Stage 6) ---
 
 export interface ScreenAnalysis {
   page_title: string;
@@ -91,7 +121,7 @@ export interface ScreenAnalysis {
   confidence: number; // 1-5
 }
 
-// --- Document Generation (Stage 6) ---
+// --- Document Generation (Stage 7) ---
 
 export interface JourneyProse {
   overview: string;
@@ -113,10 +143,11 @@ export type JobStatus =
   | "queued"
   | "analyzing_code"
   | "analyzing_prd"
+  | "discovering"
   | "planning_journeys"
   | "crawling"
   | "analyzing_screens"
-  | "generating_doc"
+  | "generating_docs"
   | "completed"
   | "failed";
 
@@ -130,6 +161,7 @@ export interface Profile {
   email: string;
   display_name: string | null;
   plan: UserPlan;
+  credits: number;
   github_token: string | null;
   created_at: string;
 }
@@ -150,11 +182,29 @@ export interface Job {
   progress: { screens_found?: number; screens_crawled?: number; current_step?: string };
   quality_score: number | null;
   flagged_for_review: boolean;
-  result: { doc_url: string; total_screens: number; avg_confidence: number; duration_seconds: number } | null;
+  result: JobResult | null;
   error: string | null;
+  estimated_cost_cents: number | null;
+  actual_cost_cents: number | null;
+  discovery_data: DiscoveryResult[] | null;
+  code_analysis_summary: string | null;
+  prd_analysis_summary: string | null;
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
+}
+
+export interface JobResult {
+  docs_url: string;
+  zip_url: string;
+  total_screens: number;
+  avg_confidence: number;
+  duration_seconds: number;
+  journeys_completed: number;
+  journeys_total: number;
+  estimated_cost_cents: number;
+  actual_cost_cents: number;
+  additional_journeys: { title: string; description: string }[];
 }
 
 export interface Screen {

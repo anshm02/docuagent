@@ -671,21 +671,31 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
     for (const journey of sortedJourneys) {
       if (screens.length >= maxScreens) {
         console.log(`[crawl] Max screens (${maxScreens}) reached, stopping`);
+        await broadcastProgress(config.jobId, "info", `Max screens (${maxScreens}) reached, stopping crawl`);
         break;
       }
 
       console.log(`\n[crawl] === Journey: ${journey.title} (priority ${journey.priority}) ===`);
-      await broadcastProgress(config.jobId, "info", `Starting journey: ${journey.title}`);
+      await broadcastProgress(
+        config.jobId,
+        "info",
+        `Starting journey: ${journey.title} (${journey.steps.length} steps)`,
+      );
+
+      let stepsSucceeded = 0;
 
       for (let stepIdx = 0; stepIdx < journey.steps.length; stepIdx++) {
         if (screens.length >= maxScreens) break;
 
         const step = journey.steps[stepIdx];
-        console.log(`[crawl] Step ${stepIdx + 1}/${journey.steps.length}: ${step.action}`);
+        const stepLabel = `Journey "${journey.title}" — Step ${stepIdx + 1}/${journey.steps.length}: ${step.action}`;
+        console.log(`[crawl] ${stepLabel}`);
+        await broadcastProgress(config.jobId, "info", stepLabel);
+
         await updateJobProgress(config.jobId, {
           screens_found: screens.length,
           screens_crawled: screens.length,
-          current_step: `${journey.title} - Step ${stepIdx + 1}`,
+          current_step: `${journey.title} - Step ${stepIdx + 1}/${journey.steps.length}`,
         });
 
         try {
@@ -695,6 +705,7 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
           // Check for session expiry
           if (isRedirectedToLogin(page.url(), config.loginUrl)) {
             console.log("[crawl] Session expired, re-authenticating...");
+            await broadcastProgress(config.jobId, "info", "Session expired, re-authenticating...");
             if (config.loginUrl && config.credentials) {
               const reauthed = await authenticate(
                 stagehand,
@@ -703,6 +714,9 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
                 config.credentials,
               );
               if (!reauthed) {
+                const failMsg = `Step ${stepIdx + 1} failed: Re-authentication failed. Continuing.`;
+                console.error(`[crawl] ${failMsg}`);
+                await broadcastProgress(config.jobId, "error", failMsg);
                 errors.push({
                   journeyId: journey.id,
                   stepIndex: stepIdx,
@@ -802,22 +816,26 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
             screens.push(...modalResult.records);
             orderIndex = modalResult.nextOrderIndex;
           }
+
+          stepsSucceeded++;
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
-          console.error(`[crawl] Step failed: ${step.action} — ${errMsg}`);
+          const failMsg = `Step ${stepIdx + 1} failed: ${errMsg}. Continuing.`;
+          console.error(`[crawl] ${failMsg}`);
           errors.push({
             journeyId: journey.id,
             stepIndex: stepIdx,
             action: step.action,
             error: errMsg,
           });
-          await broadcastProgress(
-            config.jobId,
-            "error",
-            `Step failed: ${step.action} — ${errMsg}`,
-          );
+          await broadcastProgress(config.jobId, "error", failMsg);
         }
       }
+
+      // Journey completion summary
+      const journeyEndMsg = `Journey "${journey.title}" complete: ${stepsSucceeded}/${journey.steps.length} steps succeeded`;
+      console.log(`[crawl] ${journeyEndMsg}`);
+      await broadcastProgress(config.jobId, "info", journeyEndMsg);
     }
 
     // ----- Final summary -----

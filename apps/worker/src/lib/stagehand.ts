@@ -21,7 +21,7 @@ export async function initStagehand(): Promise<{ stagehand: Stagehand; page: Pag
   const stagehand = new Stagehand({
     env: "LOCAL",
     model: {
-      modelName: "anthropic/claude-sonnet-4-5-20250929" as const,
+      modelName: "anthropic/claude-sonnet-4-6" as const,
       apiKey,
     },
     localBrowserLaunchOptions: {

@@ -1,45 +1,62 @@
-import type { CrawlPlan } from "@docuagent/shared";
-import type { PRDSummary } from "@docuagent/shared";
+import type { CrawlPlan, PRDSummary, DiscoveryResult } from "@docuagent/shared";
 
-export function journeyPlanningPrompt(crawlPlan: CrawlPlan, prdSummary: PRDSummary): string {
+export function journeyPlanningPrompt(
+  crawlPlan: CrawlPlan,
+  prdSummary: PRDSummary,
+  discoveryResults: DiscoveryResult[],
+  maxJourneys: number,
+): string {
   return `You are planning user journeys for documenting a SaaS application.
 
-APP ROUTES:
+BUDGET CONSTRAINT: You may plan at most ${maxJourneys} journeys.
+
+APP ROUTES (from code analysis — shows what pages exist and what they contain):
 ${JSON.stringify(crawlPlan.routes, null, 2)}
 
-PRODUCT CONTEXT:
+DISCOVERY RESULTS (what the agent actually saw visiting each page):
+${JSON.stringify(discoveryResults, null, 2)}
+
+PRODUCT CONTEXT (from PRD — business purpose and workflows):
 ${JSON.stringify(prdSummary, null, 2)}
 
-Generate 5-7 core user journeys that cover the main functionality.
+Generate exactly ${maxJourneys} user journeys that best showcase the application's core functionality. Prioritize variety — pick journeys that cover DIFFERENT parts of the app.
 
-CRITICAL RULES:
-- Creation journeys FIRST (priority: 1) — these populate the app with data
-- Viewing/editing journeys SECOND (priority: 2) — these need data to exist
-- Each journey is a sequence of steps a user would follow
-- Include modals, form fills, and confirmations as separate steps
-- For creation steps, specify what test data to enter (realistic names like "Acme Corp", not "test123")
+RULES:
+- ONLY include routes that were accessible (isAccessible: true, hasError: false) in discovery results
+- Creation journeys FIRST (they populate the app with data)
+- Pick journeys that show DIFFERENT features (don't do 3 settings journeys)
+- Each journey: 3-6 steps max
+- Use code analysis field data to specify realistic test input values
+- Use PRD workflows to name and describe journeys in business terms
 - Every step must have a target_route (use the actual route paths from APP ROUTES, or "use_navigation" if the route isn't clear)
 - captures should list what to screenshot: "page" for full page, "modal:ModalName" for modals
 - Set creates_data: true for steps that create/submit new data
 
-Return as JSON array:
-[
-  {
-    "id": "journey-1",
-    "title": "Descriptive Journey Title",
-    "description": "Brief description of what this journey covers",
-    "priority": 1,
-    "steps": [
-      {
-        "action": "Human-readable action description",
-        "target_route": "/actual/route/path",
-        "interaction": "Specific interaction description or null",
-        "captures": ["page"],
-        "creates_data": false
-      }
-    ]
-  }
-]
+Also list ALL other possible journeys you identified but didn't include (as "additional" array with just titles and descriptions). These will be shown to the user as "available with upgrade."
+
+Return JSON:
+{
+  "planned": [
+    {
+      "id": "journey-1",
+      "title": "Descriptive Journey Title",
+      "description": "Brief description",
+      "priority": 1,
+      "steps": [
+        {
+          "action": "Human-readable action",
+          "target_route": "/route/path",
+          "interaction": "Specific interaction or null",
+          "captures": ["page"],
+          "creates_data": false
+        }
+      ]
+    }
+  ],
+  "additional": [
+    { "title": "Journey Title", "description": "What this journey covers" }
+  ]
+}
 
 Return ONLY valid JSON. No markdown, no explanation, no backticks.`;
 }

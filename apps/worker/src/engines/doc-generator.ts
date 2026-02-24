@@ -475,23 +475,8 @@ export async function runDocGenerator(config: DocGenConfig): Promise<DocGenResul
   const { data: urlData } = supabase.storage.from("documents").getPublicUrl(docPath);
   const docUrl = urlData.publicUrl;
 
-  // ----- Update job record -----
+  // Note: Job status + result updated by orchestrator, not here
   const durationSeconds = Math.round((Date.now() - startTime) / 1000);
-  await supabase
-    .from("jobs")
-    .update({
-      status: "completed",
-      result: {
-        doc_url: docUrl,
-        total_screens: analyzedScreens.length,
-        avg_confidence: Math.round(avgConfidence * 10) / 10,
-        duration_seconds: durationSeconds,
-      },
-      completed_at: new Date().toISOString(),
-    })
-    .eq("id", config.jobId);
-
-  await broadcastProgress(config.jobId, `Document generated! ${sections.length} sections, ${screenshotCount} screenshots, ${(fileSizeBytes / 1024).toFixed(0)} KB`);
 
   console.log(`\n[doc-gen] === Document Generation Complete ===`);
   console.log(`[doc-gen] Sections: ${sections.length}`);

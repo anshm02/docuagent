@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 
-const CLAUDE_MODEL = "claude-sonnet-4-5-20250929";
+const CLAUDE_MODEL = "claude-sonnet-4-6";
 
 let _client: Anthropic | null = null;
 

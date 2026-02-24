@@ -42,10 +42,11 @@ const STATUS_STEPS = [
   { key: "queued", label: "Queued" },
   { key: "analyzing_code", label: "Analyzing Code" },
   { key: "analyzing_prd", label: "Analyzing PRD" },
+  { key: "discovering", label: "Discovering" },
   { key: "planning_journeys", label: "Planning Journeys" },
   { key: "crawling", label: "Crawling App" },
   { key: "analyzing_screens", label: "Analyzing Screens" },
-  { key: "generating_doc", label: "Generating Document" },
+  { key: "generating_docs", label: "Generating Docs" },
   { key: "completed", label: "Completed" },
 ];
 

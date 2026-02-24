@@ -7,6 +7,8 @@ import "dotenv/config";
 import express from "express";
 import { getSupabase } from "./lib/supabase.js";
 import { runPipeline } from "./orchestrator.js";
+import { checkUserCredits, formatCostCents } from "./lib/cost-budget.js";
+import { DEFAULT_CREDITS_CENTS } from "@docuagent/shared";
 import crypto from "crypto";
 
 const app = express();
@@ -33,12 +35,13 @@ async function getOrCreateDefaultUser(supabase: ReturnType<typeof getSupabase>):
 
   if (error) throw new Error(`Failed to create default user: ${error.message}`);
 
-  // Create profile
+  // Create profile with default credits
   await supabase.from("profiles").upsert({
     id: newUser.user.id,
     email: defaultEmail,
     display_name: "API Default User",
     plan: "free",
+    credits: DEFAULT_CREDITS_CENTS,
   });
 
   return newUser.user.id;
@@ -134,6 +137,17 @@ app.post("/api/jobs", async (req, res) => {
       resolvedUserId = await getOrCreateDefaultUser(supabase);
     }
 
+    // Check user has credits before starting
+    const { hasCredits, credits } = await checkUserCredits(resolvedUserId);
+    if (!hasCredits) {
+      res.status(402).json({
+        error: "No credits remaining. Please upgrade your plan to continue generating documentation.",
+        credits: 0,
+      });
+      return;
+    }
+    console.log(`[api] User credits: ${formatCostCents(credits)}`);
+
     const { error: insertErr } = await supabase.from("jobs").insert({
       id: jobId,
       user_id: resolvedUserId,
@@ -183,7 +197,7 @@ app.get("/api/jobs/:id", async (req, res) => {
 
     const { data: job, error } = await supabase
       .from("jobs")
-      .select("id, status, app_url, app_name, progress, quality_score, flagged_for_review, result, error, started_at, completed_at, created_at")
+      .select("id, status, app_url, app_name, progress, quality_score, flagged_for_review, result, error, estimated_cost_cents, actual_cost_cents, code_analysis_summary, prd_analysis_summary, discovery_data, journeys, started_at, completed_at, created_at")
       .eq("id", id)
       .single();
 
@@ -198,7 +212,7 @@ app.get("/api/jobs/:id", async (req, res) => {
       .select("type, message, screenshot_url, created_at")
       .eq("job_id", id)
       .order("created_at", { ascending: false })
-      .limit(20);
+      .limit(100);
 
     res.json({
       ...job,

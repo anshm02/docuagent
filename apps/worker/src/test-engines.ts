@@ -8,6 +8,7 @@ config({ path: join(__dirname, "../../../.env") });
 import { runCodeAnalysis } from "./engines/code-analysis.js";
 import { runPrdAnalysis } from "./engines/prd-analysis.js";
 import { runJourneyPlanner } from "./engines/journey-planner.js";
+import type { Journey, JourneyPlanResult } from "@docuagent/shared";
 
 const REPO_URL = "https://github.com/nextjs/saas-starter";
 const PRODUCT_DESCRIPTION = `
@@ -71,9 +72,9 @@ try {
   prdSummary = await runPrdAnalysis({ productDescription: PRODUCT_DESCRIPTION });
   console.log(`\n✓ Product: ${prdSummary.product_name}`);
   console.log(`  Purpose: ${prdSummary.product_purpose}`);
-  console.log(`  Features: ${prdSummary.main_features.map((f) => f.name).join(", ")}`);
+  console.log(`  Features: ${prdSummary.main_features.map((f: { name: string }) => f.name).join(", ")}`);
   console.log(`  Workflows: ${prdSummary.key_workflows.length}`);
-  console.log(`  Roles: ${prdSummary.user_roles.map((r) => r.role).join(", ")}`);
+  console.log(`  Roles: ${prdSummary.user_roles.map((r: { role: string }) => r.role).join(", ")}`);
   console.log(`  Terms: ${prdSummary.terminology.length}`);
 } catch (error) {
   const msg = `PRD analysis failed: ${(error as Error).message}`;
@@ -91,23 +92,29 @@ try {
 }
 
 // ============================
-// Stage 3: Journey Planning
+// Stage 3: Journey Planning (V2 — with budget + empty discovery)
 // ============================
 console.log("\n╔══════════════════════════════════════╗");
 console.log("║  Stage 3: Journey Planning           ║");
 console.log("╚══════════════════════════════════════╝\n");
 
-let journeys;
+let planResult: JourneyPlanResult | null = null;
+let journeys: Journey[] = [];
 try {
-  journeys = await runJourneyPlanner(crawlPlan, prdSummary);
-  console.log(`\n✓ Journeys planned: ${journeys.length}`);
+  // V2: pass empty discovery results and max 5 journeys (free tier cap)
+  planResult = await runJourneyPlanner(crawlPlan, prdSummary, [], 5);
+  journeys = planResult.planned;
+  console.log(`\n✓ Journeys planned: ${journeys.length}, additional: ${planResult.additional.length}`);
   for (const j of journeys) {
     console.log(`  [P${j.priority}] "${j.title}" — ${j.steps.length} steps`);
   }
+  if (planResult.additional.length > 0) {
+    console.log(`  Additional (upgrade): ${planResult.additional.map((a: { title: string }) => a.title).join(", ")}`);
+  }
 
   // Verify creation journeys come first
-  const firstPriority2 = journeys.findIndex((j) => j.priority === 2);
-  const lastPriority1 = journeys.map((j, i) => (j.priority === 1 ? i : -1)).filter((i) => i >= 0).pop() ?? -1;
+  const firstPriority2 = journeys.findIndex((j: Journey) => j.priority === 2);
+  const lastPriority1 = journeys.map((j: Journey, i: number) => (j.priority === 1 ? i : -1)).filter((i: number) => i >= 0).pop() ?? -1;
   if (firstPriority2 !== -1 && lastPriority1 !== -1 && firstPriority2 < lastPriority1) {
     errors.push("Journey ordering error: priority 2 journey appears before all priority 1 journeys");
   } else {
@@ -130,10 +137,13 @@ console.log("╚═════════════════════�
 console.log(`Total time: ${totalElapsed}s`);
 console.log(`Routes found: ${crawlPlan.routes.length}`);
 console.log(`PRD product: ${prdSummary.product_name} (${prdSummary.main_features.length} features)`);
-console.log(`Journeys: ${journeys?.length ?? 0}`);
-if (journeys) {
-  console.log(`Journey titles: ${journeys.map((j) => j.title).join(", ")}`);
-  console.log(`Total steps: ${journeys.reduce((sum, j) => sum + j.steps.length, 0)}`);
+console.log(`Journeys: ${journeys.length}`);
+if (journeys.length > 0) {
+  console.log(`Journey titles: ${journeys.map((j: Journey) => j.title).join(", ")}`);
+  console.log(`Total steps: ${journeys.reduce((sum: number, j: Journey) => sum + j.steps.length, 0)}`);
+}
+if (planResult && planResult.additional.length > 0) {
+  console.log(`Additional journeys: ${planResult.additional.length}`);
 }
 
 if (errors.length > 0) {
