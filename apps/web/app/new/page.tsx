@@ -30,6 +30,7 @@ export default function NewJobPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [githubRepoUrl, setGithubRepoUrl] = useState("");
+  const [productDescription, setProductDescription] = useState("");
   const [prdFile, setPrdFile] = useState<File | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -84,6 +85,7 @@ export default function NewJobPage() {
         body.credentials = { username, password };
       }
       if (githubRepoUrl) body.github_repo_url = githubRepoUrl;
+      if (productDescription) body.product_description = productDescription;
 
       // Upload PRD if provided
       if (prdFile) {
@@ -322,6 +324,23 @@ export default function NewJobPage() {
                   placeholder="https://github.com/org/repo"
                   autoFocus
                 />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">
+                  Product Description{" "}
+                  <span className="text-gray-500 font-normal">(optional)</span>
+                </label>
+                <textarea
+                  value={productDescription}
+                  onChange={(e) => setProductDescription(e.target.value)}
+                  className="glass-input text-sm min-h-[80px] resize-y"
+                  placeholder="Describe your product: what it does, who it's for, key features..."
+                  rows={3}
+                />
+                <p className="text-xs text-gray-500 mt-1.5">
+                  Adds business context, glossary terms, and workflow descriptions to docs
+                </p>
               </div>
 
               <div>

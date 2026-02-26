@@ -23,6 +23,8 @@ Generate exactly ${maxJourneys} user journeys that best showcase the application
 
 RULES:
 - ONLY include routes that were accessible (isAccessible: true, hasError: false) in discovery results
+- NEVER include routes that had errors (hasError: true) in ANY journey — not in planned journeys AND not in additional journeys
+- Do NOT suggest journeys that involve pages that were inaccessible or errored during discovery
 - Creation journeys FIRST (they populate the app with data)
 - Pick journeys that show DIFFERENT features (don't do 3 settings journeys)
 - Each journey: 3-6 steps max
@@ -32,7 +34,7 @@ RULES:
 - captures should list what to screenshot: "page" for full page, "modal:ModalName" for modals
 - Set creates_data: true for steps that create/submit new data
 
-Also list ALL other possible journeys you identified but didn't include (as "additional" array with just titles and descriptions). These will be shown to the user as "available with upgrade."
+Also list other possible journeys you identified but didn't include (as "additional" array with just titles and descriptions). These will be shown to the user as "available with upgrade." IMPORTANT: Only include additional journeys that use routes which were ACCESSIBLE and ERROR-FREE in discovery. Never suggest journeys involving errored or inaccessible pages.
 
 Return JSON:
 {

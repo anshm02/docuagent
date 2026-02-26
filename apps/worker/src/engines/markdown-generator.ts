@@ -59,6 +59,18 @@ async function fetchScreenshotBuffer(url: string): Promise<Buffer | null> {
   try {
     const response = await fetch(url);
     if (!response.ok) return null;
+    const contentType = response.headers.get("content-type") ?? "";
+    // If we got HTML instead of an image, the upload failed — retry after delay
+    if (contentType.includes("text/html")) {
+      console.log(`[md-gen] Got HTML instead of image for ${url}, retrying after 3s...`);
+      await new Promise((r) => setTimeout(r, 3000));
+      const retry = await fetch(url);
+      if (!retry.ok) return null;
+      const retryType = retry.headers.get("content-type") ?? "";
+      if (retryType.includes("text/html")) return null;
+      const buf = await retry.arrayBuffer();
+      return Buffer.from(buf);
+    }
     const arrayBuf = await response.arrayBuffer();
     return Buffer.from(arrayBuf);
   } catch (err) {
@@ -89,6 +101,7 @@ async function generateJourneyMarkdown(
   journeyDescription: string,
   screens: Screen[],
   prdSummary: PRDSummary | null,
+  availableSlugs?: string[],
 ): Promise<MarkdownJourneyContent> {
   const screenAnalyses = screens
     .filter((s) => s.analysis)
@@ -127,6 +140,7 @@ async function generateJourneyMarkdown(
           user_roles: prdSummary.user_roles,
         }
       : null,
+    availableSlugs,
   });
 
   try {
@@ -151,7 +165,9 @@ async function generateJourneyMarkdown(
       permission_notes: parsed.permission_notes ?? [],
       fields: parsed.fields ?? [],
       tips: parsed.tips ?? [],
-      related: (parsed.related_slugs ?? []).map((slug) => ({ title: slug, slug })),
+      related: (parsed.related_slugs ?? [])
+        .filter((slug) => availableSlugs?.includes(slug))
+        .map((slug) => ({ title: slug.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()), slug })),
       hero_screenshot_ref: screenAnalyses[0]?.screenshotRef ?? "",
       step_screenshot_refs: screenAnalyses.map((sa) => sa.screenshotRef),
     };
@@ -620,6 +636,11 @@ export async function runMarkdownGenerator(
   const journeyContents: MarkdownJourneyContent[] = [];
   const mdFiles: { path: string; content: Buffer }[] = [];
 
+  // Pre-compute all journey slugs so we can pass them for related links (3A)
+  const allJourneySlugs = journeyInfos
+    .filter((j) => (journeyMap.get(j.id) ?? []).length > 0)
+    .map((j) => slugify(j.title));
+
   for (const jInfo of journeyInfos) {
     const jScreens = journeyMap.get(jInfo.id) ?? [];
     if (jScreens.length === 0) continue;
@@ -627,11 +648,16 @@ export async function runMarkdownGenerator(
     console.log(`[md-gen] Generating markdown for journey: ${jInfo.title} (${jScreens.length} screens)`);
     await broadcastProgress(config.jobId, `Writing guide: ${jInfo.title}`);
 
+    // Pass available slugs excluding the current journey's own slug
+    const currentSlug = slugify(jInfo.title);
+    const otherSlugs = allJourneySlugs.filter((s) => s !== currentSlug);
+
     const content = await generateJourneyMarkdown(
       jInfo.title,
       jInfo.description,
       jScreens,
       config.prdSummary,
+      otherSlugs,
     );
     journeyContents.push(content);
 

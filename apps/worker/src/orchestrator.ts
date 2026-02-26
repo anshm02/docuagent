@@ -10,7 +10,7 @@ import { runCodeAnalysis } from "./engines/code-analysis.js";
 import { runPrdAnalysis } from "./engines/prd-analysis.js";
 import { runDiscoveryCrawl } from "./engines/discovery-crawl.js";
 import { runJourneyPlanner } from "./engines/journey-planner.js";
-import { runCrawl } from "./engines/crawl.js";
+import { runCrawl, findLoginPage, detectAppName } from "./engines/crawl.js";
 import { runScreenAnalysis } from "./engines/screen-analysis.js";
 import { runMarkdownGenerator } from "./engines/markdown-generator.js";
 import {
@@ -220,7 +220,7 @@ export async function runPipeline(jobId: string): Promise<void> {
   }
 
   const typedJob = job as Job;
-  const appName = typedJob.app_name ?? new URL(typedJob.app_url).hostname;
+  let appName = typedJob.app_name ?? "";
 
   // ═════════════════════════════════════════════════
   // Credit check before starting
@@ -248,6 +248,7 @@ export async function runPipeline(jobId: string): Promise<void> {
   let costEstimate: CostEstimate | null = null;
   let screensCaptured = 0;
   let hadPrd = false;
+  let loginUrl: string | null | undefined = typedJob.login_url;
 
   try {
     // ═════════════════════════════════════════════════
@@ -327,11 +328,27 @@ export async function runPipeline(jobId: string): Promise<void> {
     const { stagehand, page } = await initStagehand();
 
     try {
-      // Authenticate first
-      if (typedJob.login_url && typedJob.credentials) {
+      // Determine login URL (auto-detect if not provided)
+      const hasCredentials = !!(typedJob.credentials?.username && typedJob.credentials?.password);
+
+      if (!loginUrl && hasCredentials) {
+        await broadcastProgress(jobId, "info", "Auto-detecting login page...");
+        loginUrl = await findLoginPage(stagehand, page, typedJob.app_url, true);
+        if (!loginUrl) {
+          await closeStagehand();
+          await failJob(jobId, "Could not find login page. Please provide the login URL.");
+          await deleteCredentials(jobId);
+          return;
+        }
+        console.log(`[orchestrator] Auto-detected login URL: ${loginUrl}`);
+        await broadcastProgress(jobId, "info", `Found login page: ${loginUrl}`);
+      }
+
+      // Authenticate
+      if (loginUrl && typedJob.credentials) {
         await broadcastProgress(jobId, "info", "Logging in...");
-        console.log(`[orchestrator] Navigating to login page: ${typedJob.login_url}`);
-        await page.goto(typedJob.login_url, {
+        console.log(`[orchestrator] Navigating to login page: ${loginUrl}`);
+        await page.goto(loginUrl, {
           waitUntil: "networkidle",
           timeoutMs: PAGE_TIMEOUT_MS,
         });
@@ -342,7 +359,7 @@ export async function runPipeline(jobId: string): Promise<void> {
         for (let attempt = 0; attempt < 2; attempt++) {
           if (attempt > 0) {
             console.log("[orchestrator] Retrying login...");
-            await page.goto(typedJob.login_url!, {
+            await page.goto(loginUrl!, {
               waitUntil: "networkidle",
               timeoutMs: PAGE_TIMEOUT_MS,
             });
@@ -383,13 +400,21 @@ export async function runPipeline(jobId: string): Promise<void> {
             }
           }
         }
-      } else {
+      } else if (!hasCredentials) {
         // No login required — navigate to app URL
         await page.goto(typedJob.app_url, {
           waitUntil: "networkidle",
           timeoutMs: PAGE_TIMEOUT_MS,
         });
         await waitForSettle(page);
+      }
+
+      // Detect app name (2E)
+      if (!appName) {
+        appName = await detectAppName(stagehand, page, typedJob.product_description);
+        // Store on job record
+        await supabase.from("jobs").update({ app_name: appName }).eq("id", jobId);
+        console.log(`[orchestrator] App name: "${appName}"`);
       }
 
       // Run discovery crawl (no AI calls — free)
@@ -482,7 +507,7 @@ export async function runPipeline(jobId: string): Promise<void> {
       const crawlResult = await runCrawl({
         jobId,
         appUrl: typedJob.app_url,
-        loginUrl: typedJob.login_url ?? undefined,
+        loginUrl: typedJob.login_url ?? loginUrl ?? undefined,
         credentials: typedJob.credentials ?? undefined,
         journeys,
         crawlPlan,

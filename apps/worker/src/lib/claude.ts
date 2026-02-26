@@ -10,7 +10,7 @@ function getClient(): Anthropic {
     if (!apiKey) {
       throw new Error("Missing ANTHROPIC_API_KEY");
     }
-    _client = new Anthropic({ apiKey });
+    _client = new Anthropic({ apiKey, timeout: 60_000 });
   }
   return _client;
 }

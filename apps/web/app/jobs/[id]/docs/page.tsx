@@ -447,7 +447,9 @@ export default function DocsViewerPage() {
                     </blockquote>
                   ),
                 }}
-              />
+              >
+                {markdownContent}
+              </ReactMarkdown>
             </article>
           )}
         </main>

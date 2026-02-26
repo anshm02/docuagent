@@ -68,10 +68,11 @@ export interface CrawlError {
 }
 
 // ---------------------------------------------------------------------------
-// Duplicate detection
+// Duplicate detection — URL-based + DOM-hash
 // ---------------------------------------------------------------------------
 
 const domHashes = new Set<string>();
+const capturedUrls = new Set<string>();
 
 function hashDom(dom: string): string {
   return crypto.createHash("md5").update(dom).digest("hex");
@@ -82,6 +83,74 @@ function isDuplicate(dom: string): boolean {
   if (domHashes.has(hash)) return true;
   domHashes.add(hash);
   return false;
+}
+
+function isUrlAlreadyCaptured(url: string): boolean {
+  try {
+    const normalized = new URL(url).pathname;
+    return capturedUrls.has(normalized);
+  } catch {
+    return capturedUrls.has(url);
+  }
+}
+
+function markUrlCaptured(url: string): void {
+  try {
+    capturedUrls.add(new URL(url).pathname);
+  } catch {
+    capturedUrls.add(url);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Auth page detection
+// ---------------------------------------------------------------------------
+
+const AUTH_PAGE_PATTERNS = [
+  "/login", "/sign-in", "/signin", "/sign-up", "/signup",
+  "/register", "/auth", "/account/login",
+];
+
+function isAuthPageUrl(url: string): boolean {
+  const lower = url.toLowerCase();
+  return AUTH_PAGE_PATTERNS.some((p) => lower.includes(p));
+}
+
+// ---------------------------------------------------------------------------
+// Chrome-error and Cloudflare detection
+// ---------------------------------------------------------------------------
+
+function isChromeErrorPage(url: string): boolean {
+  return url.startsWith("chrome-error://");
+}
+
+async function isCloudflareBlock(page: Page): Promise<boolean> {
+  try {
+    const bodyText = await page.evaluate(() => {
+      return (globalThis as any).document?.body?.innerText?.substring(0, 2000) ?? "";
+    });
+    const lower = bodyText.toLowerCase();
+    return (
+      lower.includes("cloudflare") &&
+      (lower.includes("blocked") ||
+        lower.includes("attention required") ||
+        lower.includes("security service") ||
+        lower.includes("ray id"))
+    );
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Page health check — returns reason to skip or null if OK
+// ---------------------------------------------------------------------------
+
+async function checkPageHealth(page: Page): Promise<string | null> {
+  const url = page.url();
+  if (isChromeErrorPage(url)) return "browser error page";
+  if (await isCloudflareBlock(page)) return "Cloudflare security block";
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -112,6 +181,159 @@ async function uploadScreenshot(
     console.error(`[crawl] Upload exception for ${filename}:`, err);
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Auto-detect login page (2A)
+// ---------------------------------------------------------------------------
+
+export async function findLoginPage(
+  stagehand: Stagehand,
+  page: Page,
+  appUrl: string,
+  hasCredentials: boolean,
+): Promise<string | null> {
+  console.log("[crawl] Auto-detecting login page...");
+
+  // 1. Visit app URL — check if it already has login fields
+  try {
+    await page.goto(appUrl, { waitUntil: "networkidle", timeoutMs: PAGE_TIMEOUT_MS });
+    await waitForSettle(page);
+  } catch {
+    // timeout OK, continue checking
+  }
+
+  const currentUrl = page.url();
+
+  // Check if we were redirected to a login page
+  if (isAuthPageUrl(currentUrl)) {
+    console.log(`[crawl] App URL redirected to login: ${currentUrl}`);
+    return currentUrl;
+  }
+
+  // Check if current page has login fields
+  const hasLoginForm = await page.evaluate(() => {
+    const d = (globalThis as any).document;
+    const inputs = d.querySelectorAll('input[type="email"], input[type="password"], input[name="email"], input[name="password"]');
+    return inputs.length >= 2;
+  });
+  if (hasLoginForm) {
+    console.log(`[crawl] App URL itself is the login page: ${currentUrl}`);
+    return currentUrl;
+  }
+
+  // 2. Try common login paths
+  const commonPaths = ["/login", "/sign-in", "/signin", "/auth/login", "/auth", "/account/login"];
+  const baseUrl = appUrl.replace(/\/$/, "");
+
+  for (const path of commonPaths) {
+    try {
+      const testUrl = `${baseUrl}${path}`;
+      await page.goto(testUrl, { waitUntil: "networkidle", timeoutMs: 10_000 });
+      const hasForm = await page.evaluate(() => {
+        const d = (globalThis as any).document;
+        const inputs = d.querySelectorAll('input[type="email"], input[type="password"], input[name="email"], input[name="password"]');
+        return inputs.length >= 1;
+      });
+      if (hasForm) {
+        console.log(`[crawl] Found login page at: ${testUrl}`);
+        return testUrl;
+      }
+    } catch {
+      // path not reachable, try next
+    }
+  }
+
+  // 3. Look for login links on the page
+  try {
+    await page.goto(appUrl, { waitUntil: "networkidle", timeoutMs: PAGE_TIMEOUT_MS });
+    const loginLink = await page.evaluate(() => {
+      const d = (globalThis as any).document;
+      const links = Array.from(d.querySelectorAll("a")) as any[];
+      const found = links.find((a: any) => {
+        const text = (a.innerText ?? "").toLowerCase();
+        return text.includes("sign in") || text.includes("log in") || text.includes("login");
+      });
+      return found?.href ?? null;
+    });
+    if (loginLink) {
+      console.log(`[crawl] Found login link: ${loginLink}`);
+      return loginLink;
+    }
+  } catch {
+    // failed, continue
+  }
+
+  if (hasCredentials) {
+    console.error("[crawl] Could not find login page. Credentials provided but no login page found.");
+    return null; // Will cause error to be reported
+  }
+
+  console.log("[crawl] No login page found, proceeding without authentication");
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Detect app name from page (2E)
+// ---------------------------------------------------------------------------
+
+export async function detectAppName(
+  stagehand: Stagehand,
+  page: Page,
+  productDescription?: string | null,
+): Promise<string> {
+  let appName = "";
+
+  // 1. Try Stagehand observe for brand/logo
+  try {
+    const observations = await stagehand.observe(
+      "Find the application or company name/logo in the header or navigation bar. Return the text of the brand name.",
+      { timeout: 10_000 },
+    );
+    if (observations.length > 0) {
+      appName = observations[0].description?.trim() ?? "";
+    }
+  } catch {
+    // observe failed, try fallback
+  }
+
+  // 2. If generic or empty, try document.title
+  const genericNames = ["home", "dashboard", "next.js", "app", ""];
+  if (genericNames.includes(appName.toLowerCase())) {
+    try {
+      const title = await page.evaluate(() => {
+        return (globalThis as any).document?.title ?? "";
+      });
+      // Clean up title: remove " - Dashboard", " | Home" etc.
+      appName = title
+        .replace(/\s*[-|–—]\s*(dashboard|home|admin|app|settings).*$/i, "")
+        .trim();
+    } catch {
+      // fallback below
+    }
+  }
+
+  // 3. If still generic, use product description
+  if (genericNames.includes(appName.toLowerCase()) && productDescription) {
+    // Extract first capitalized word/phrase that looks like a name
+    const match = productDescription.match(/^([A-Z][A-Za-z]+(?:\s[A-Z][A-Za-z]+)*)/);
+    if (match) {
+      appName = match[1];
+    }
+  }
+
+  // 4. Remove common suffixes
+  appName = appName
+    .replace(/\s*[-|–—]\s*(Dashboard|Home|Admin|App|Settings|Next\.js)$/i, "")
+    .trim();
+
+  // 5. Final fallback
+  if (!appName || genericNames.includes(appName.toLowerCase())) {
+    appName = "Application";
+  }
+
+  console.log(`[crawl] Detected app name: "${appName}"`);
+  return appName;
 }
 
 // ---------------------------------------------------------------------------
@@ -249,14 +471,30 @@ async function authenticate(
 }
 
 // ---------------------------------------------------------------------------
-// Session expiry detection
+// Session expiry detection (2B — improved)
 // ---------------------------------------------------------------------------
 
 function isRedirectedToLogin(url: string, loginUrl?: string): boolean {
-  const loginPatterns = ["/login", "/sign-in", "/signin", "/sign-up", "/signup", "/auth"];
-  const lower = url.toLowerCase();
   if (loginUrl && url.startsWith(loginUrl)) return true;
-  return loginPatterns.some((p) => lower.includes(p));
+  return isAuthPageUrl(url);
+}
+
+async function hasActualLoginForm(page: Page): Promise<boolean> {
+  try {
+    return await page.evaluate(() => {
+      const d = (globalThis as any).document;
+      const passwordInputs = d.querySelectorAll('input[type="password"]');
+      const hasNavOrSidebar = d.querySelectorAll("nav, aside, .sidebar, [role='navigation']").length > 0;
+      // If there's a password input but also rich nav/sidebar content, this is NOT a login page
+      // (it might be a settings page with password change)
+      if (passwordInputs.length === 0) return false;
+      const bodyText = (d.body as any)?.innerText ?? "";
+      const hasDashboardContent = bodyText.length > 2000 && hasNavOrSidebar;
+      return !hasDashboardContent;
+    });
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -322,16 +560,40 @@ async function captureScreen(
   },
 ): Promise<{ record: ScreenRecord; screenshotUrl: string | null } | null> {
   const url = page.url();
-  const dom = await cleanDom(page);
 
-  if (isDuplicate(dom)) {
-    console.log(`[crawl] Skipping duplicate screen at ${url}`);
+  // Check page health first
+  const healthIssue = await checkPageHealth(page);
+  if (healthIssue) {
+    console.log(`[crawl] Skipped: ${healthIssue} at ${url}`);
     return null;
   }
 
+  // Check URL-based duplicate
+  if (isUrlAlreadyCaptured(url)) {
+    console.log(`[crawl] Skipping already-captured URL: ${url}`);
+    return null;
+  }
+
+  const dom = await cleanDom(page);
+
+  if (isDuplicate(dom)) {
+    console.log(`[crawl] Skipping duplicate DOM at ${url}`);
+    return null;
+  }
+
+  // Mark URL as captured
+  markUrlCaptured(url);
+
   const screenshotBuffer = await takeScreenshot(page);
   const filename = `screen_${opts.orderIndex}_${Date.now()}.png`;
-  const screenshotUrl = await uploadScreenshot(jobId, screenshotBuffer, filename);
+  let screenshotUrl = await uploadScreenshot(jobId, screenshotBuffer, filename);
+
+  // Retry upload once if it failed (2D)
+  if (!screenshotUrl) {
+    console.log(`[crawl] Retrying screenshot upload after 3s delay...`);
+    await page.waitForTimeout(3000);
+    screenshotUrl = await uploadScreenshot(jobId, screenshotBuffer, filename);
+  }
 
   const record: ScreenRecord = {
     id: "",
@@ -382,15 +644,15 @@ async function executeStep(
     try {
       await page.goto(fullUrl, {
         waitUntil: "networkidle",
-        timeoutMs: PAGE_TIMEOUT_MS,
+        timeoutMs: PAGE_TIMEOUT_MS, // 30s
       });
     } catch {
       console.log(`[crawl] Direct navigation timeout for ${fullUrl}, trying stagehand act`);
-      await stagehand.act(step.action, { timeout: PAGE_TIMEOUT_MS });
+      await stagehand.act(step.action, { timeout: 15_000 }); // 15s for act
     }
   } else {
-    // Use stagehand to navigate
-    await stagehand.act(step.action, { timeout: PAGE_TIMEOUT_MS });
+    // Use stagehand to navigate (15s timeout)
+    await stagehand.act(step.action, { timeout: 15_000 });
   }
 
   await waitForSettle(page);
@@ -406,7 +668,7 @@ async function handleInteraction(
   let createdEntityId: string | null = null;
 
   try {
-    await stagehand.act(step.interaction, { timeout: PAGE_TIMEOUT_MS });
+    await stagehand.act(step.interaction, { timeout: 15_000 });
     await waitForSettle(page);
 
     // If this step creates data, try to extract the entity ID
@@ -608,9 +870,12 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
   const screens: ScreenRecord[] = [];
   const errors: CrawlError[] = [];
   let orderIndex = 0;
+  let reAuthCount = 0;
+  const MAX_REAUTHS = 2;
 
   // Reset duplicate detection
   domHashes.clear();
+  capturedUrls.clear();
 
   console.log("[crawl] Initializing Stagehand...");
   const { stagehand, page } = await initStagehand();
@@ -636,6 +901,23 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
         return { screens, errors, totalDurationMs: Date.now() - startTime };
       }
       await broadcastProgress(config.jobId, "info", "Login successful!");
+    } else if (!config.loginUrl && config.credentials) {
+      // Auto-detect login page (2A)
+      const detectedLogin = await findLoginPage(stagehand, page, config.appUrl, true);
+      if (detectedLogin) {
+        await broadcastProgress(config.jobId, "info", `Auto-detected login page: ${detectedLogin}`);
+        const loggedIn = await authenticate(stagehand, page, detectedLogin, config.credentials);
+        if (!loggedIn) {
+          errors.push({ journeyId: "auth", stepIndex: 0, action: "login", error: "Auto-detected login failed" });
+          await broadcastProgress(config.jobId, "error", "Login failed — could not find login page. Please provide the login URL.");
+          return { screens, errors, totalDurationMs: Date.now() - startTime };
+        }
+        await broadcastProgress(config.jobId, "info", "Login successful!");
+      } else {
+        await broadcastProgress(config.jobId, "error", "Could not find login page. Please provide the login URL.");
+        errors.push({ journeyId: "auth", stepIndex: 0, action: "find-login", error: "Could not find login page" });
+        return { screens, errors, totalDurationMs: Date.now() - startTime };
+      }
     } else {
       // No login required — just navigate to app URL
       await page.goto(config.appUrl, {
@@ -699,35 +981,76 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
         });
 
         try {
+          // (2C) Check if target URL is already captured — skip immediately
+          if (step.target_route && step.target_route !== "use_navigation") {
+            const fullTargetUrl = step.target_route.startsWith("http")
+              ? step.target_route
+              : `${config.appUrl.replace(/\/$/, "")}${step.target_route}`;
+            if (isUrlAlreadyCaptured(fullTargetUrl)) {
+              console.log(`[crawl] Skipping already-captured target: ${step.target_route}`);
+              stepsSucceeded++;
+              continue;
+            }
+          }
+
+          const urlBeforeStep = page.url();
+
           // Execute the navigation/action
           await executeStep(stagehand, page, step, journey.title, config.appUrl);
 
-          // Check for session expiry
-          if (isRedirectedToLogin(page.url(), config.loginUrl)) {
-            console.log("[crawl] Session expired, re-authenticating...");
-            await broadcastProgress(config.jobId, "info", "Session expired, re-authenticating...");
-            if (config.loginUrl && config.credentials) {
-              const reauthed = await authenticate(
-                stagehand,
-                page,
-                config.loginUrl,
-                config.credentials,
-              );
+          // (2D) Check page health after navigation
+          const healthIssue = await checkPageHealth(page);
+          if (healthIssue) {
+            console.log(`[crawl] Skipped step: ${healthIssue}`);
+            await broadcastProgress(config.jobId, "info", `Skipped: ${healthIssue} at ${page.url()}`);
+            stepsSucceeded++;
+            continue;
+          }
+
+          // (2B) Check for session expiry — but don't re-auth on auth pages visited intentionally
+          const currentUrl = page.url();
+          if (isRedirectedToLogin(currentUrl, config.loginUrl)) {
+            // Check if the step was TARGETING an auth page (e.g., documenting sign-up)
+            const targetedAuthPage = step.target_route && isAuthPageUrl(step.target_route);
+
+            if (targetedAuthPage) {
+              // The step intentionally navigated to an auth page — this is normal for logged-in users
+              // The redirect to dashboard IS the expected behavior
+              console.log(`[crawl] Navigated to auth page ${step.target_route} — redirect to dashboard is expected`);
+              stepsSucceeded++;
+              continue;
+            }
+
+            // Actually check if there's a login form (not just a URL pattern match)
+            const hasLoginFields = await hasActualLoginForm(page);
+            if (!hasLoginFields) {
+              // URL has auth pattern but page content is normal (redirected to dashboard)
+              console.log(`[crawl] Auth URL but no login form — session is fine, continuing`);
+            } else if (reAuthCount >= MAX_REAUTHS) {
+              console.log(`[crawl] Re-auth cap (${MAX_REAUTHS}) reached, skipping step`);
+              await broadcastProgress(config.jobId, "info", `Re-authentication cap reached, skipping step`);
+              errors.push({ journeyId: journey.id, stepIndex: stepIdx, action: step.action, error: "Re-auth cap reached" });
+              continue;
+            } else if (config.loginUrl && config.credentials) {
+              reAuthCount++;
+              console.log(`[crawl] Session expired, re-authenticating (attempt ${reAuthCount}/${MAX_REAUTHS})...`);
+              await broadcastProgress(config.jobId, "info", `Session expired, re-authenticating (${reAuthCount}/${MAX_REAUTHS})...`);
+              const reauthed = await authenticate(stagehand, page, config.loginUrl, config.credentials);
               if (!reauthed) {
                 const failMsg = `Step ${stepIdx + 1} failed: Re-authentication failed. Continuing.`;
                 console.error(`[crawl] ${failMsg}`);
                 await broadcastProgress(config.jobId, "error", failMsg);
-                errors.push({
-                  journeyId: journey.id,
-                  stepIndex: stepIdx,
-                  action: step.action,
-                  error: "Re-authentication failed",
-                });
+                errors.push({ journeyId: journey.id, stepIndex: stepIdx, action: step.action, error: "Re-authentication failed" });
                 continue;
               }
               // Retry step after re-auth
               await executeStep(stagehand, page, step, journey.title, config.appUrl);
             }
+          }
+
+          // (2C) Check if URL changed after step — if same, action didn't work
+          if (page.url() === urlBeforeStep && step.target_route && step.target_route !== "use_navigation") {
+            console.log(`[crawl] URL unchanged after step, action may not have worked`);
           }
 
           // Find code context for this route
@@ -843,6 +1166,7 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
     console.log(`\n[crawl] === Crawl Complete ===`);
     console.log(`[crawl] Screens captured: ${screens.length}`);
     console.log(`[crawl] Errors: ${errors.length}`);
+    console.log(`[crawl] Re-authentications: ${reAuthCount}`);
     console.log(`[crawl] Duration: ${(totalDurationMs / 1000).toFixed(1)}s`);
 
     await broadcastProgress(

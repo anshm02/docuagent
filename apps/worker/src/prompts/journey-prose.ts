@@ -15,6 +15,7 @@ export function journeyProsePrompt(opts: {
     main_features?: { name: string; description: string }[];
     user_roles?: { role: string; description: string }[];
   } | null;
+  availableSlugs?: string[];
 }): string {
   const analysesJson = opts.screenAnalyses.map((sa) => ({
     step_number: sa.stepNum,
@@ -66,11 +67,18 @@ Return a JSON object with this exact schema:
   "related_slugs": ["string — kebab-case slugs of related journeys if known"]
 }
 
+AVAILABLE RELATED PAGES (ONLY link to these exact slugs, never invent pages that don't exist):
+${opts.availableSlugs && opts.availableSlugs.length > 0 ? opts.availableSlugs.join(", ") : "none — omit the related_slugs field entirely"}
+
 CRITICAL RULES:
 - Intro: 2-3 sentences MAX. Reference WHY this workflow matters using PRD context.
 - Steps: ONE action per item. Bold all UI element names: **Button**, **Field Name**, **Menu Item**.
+- Each step's "detail" field must be ONE sentence maximum or null. No multi-sentence explanations.
+- NEVER include browser troubleshooting advice like "Check that your browser is not auto-filling" — that's not end-user documentation.
+- NEVER start detail with "Check that", "Make sure that", "Ensure that" — these are preachy. Just state what matters.
 - Fields: merge code_context validation/types with screen analysis. Include validation rules like "max 50 characters" or "valid email format".
 - Permission notes: ONLY include if permissions data exists in the screen analyses.
+- related_slugs: ONLY use slugs from the AVAILABLE RELATED PAGES list above. If none are relevant, return an empty array.
 - BANNED phrases (never use): "This page displays", "You'll see", "Here you can", "This is designed to", "As shown above", "As you can see"
 - Write for end-users, not developers.
 - If code_context has field validation rules, include them in the field descriptions.
