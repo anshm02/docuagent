@@ -3,7 +3,22 @@
 import { createClient } from "@/lib/supabase/client";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
+import { Navbar } from "@/components/Navbar";
+import { GlassCard } from "@/components/GlassCard";
+import {
+  Loader2,
+  CheckCircle2,
+  Circle,
+  Download,
+  FileText,
+  XCircle,
+  Sparkles,
+  Monitor,
+  Route,
+  Award,
+  DollarSign,
+} from "lucide-react";
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_URL!;
 
@@ -48,7 +63,7 @@ const STATUS_STEPS = [
   { key: "queued", label: "Queued" },
   { key: "analyzing_code", label: "Analyzing Code" },
   { key: "analyzing_prd", label: "Analyzing PRD" },
-  { key: "discovering", label: "Discovering" },
+  { key: "discovering", label: "Discovering Pages" },
   { key: "planning_journeys", label: "Planning Journeys" },
   { key: "crawling", label: "Crawling App" },
   { key: "analyzing_screens", label: "Analyzing Screens" },
@@ -61,27 +76,11 @@ function getStatusIndex(status: string): number {
   return idx === -1 ? 0 : idx;
 }
 
-function formatDuration(seconds: number): string {
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60);
-  if (mins === 0) return `${secs}s`;
-  return `${mins}m ${secs}s`;
-}
-
-function formatTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
-
 export default function JobStatusPage() {
   const { id } = useParams<{ id: string }>();
   const [job, setJob] = useState<JobData | null>(null);
-  const [messages, setMessages] = useState<ProgressMessage[]>([]);
+  const [latestMessage, setLatestMessage] = useState("");
   const [fetchError, setFetchError] = useState("");
-  const feedRef = useRef<HTMLDivElement>(null);
 
   const fetchJob = useCallback(async () => {
     try {
@@ -92,28 +91,22 @@ export default function JobStatusPage() {
       }
       const data: JobData = await res.json();
       setJob(data);
-      // Merge API messages with realtime messages (dedup by created_at)
-      setMessages((prev) => {
-        const all = [...data.progress_messages.reverse(), ...prev];
-        const seen = new Set<string>();
-        return all.filter((m) => {
-          const key = `${m.created_at}-${m.message}`;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-      });
+
+      // Get the latest message for the agent activity display
+      if (data.progress_messages && data.progress_messages.length > 0) {
+        const msgs = [...data.progress_messages];
+        const latest = msgs[msgs.length - 1];
+        if (latest) setLatestMessage(latest.message);
+      }
     } catch {
       setFetchError("Failed to fetch job status");
     }
   }, [id]);
 
-  // Poll for updates
+  // Poll for updates every 5 seconds
   useEffect(() => {
     fetchJob();
-    const interval = setInterval(() => {
-      fetchJob();
-    }, 10000);
+    const interval = setInterval(fetchJob, 5000);
     return () => clearInterval(interval);
   }, [fetchJob]);
 
@@ -132,13 +125,7 @@ export default function JobStatusPage() {
         },
         (payload) => {
           const msg = payload.new as ProgressMessage;
-          setMessages((prev) => {
-            const key = `${msg.created_at}-${msg.message}`;
-            if (prev.some((m) => `${m.created_at}-${m.message}` === key)) {
-              return prev;
-            }
-            return [...prev, msg];
-          });
+          setLatestMessage(msg.message);
         }
       )
       .subscribe();
@@ -148,20 +135,13 @@ export default function JobStatusPage() {
     };
   }, [id]);
 
-  // Auto-scroll feed
-  useEffect(() => {
-    if (feedRef.current) {
-      feedRef.current.scrollTop = feedRef.current.scrollHeight;
-    }
-  }, [messages]);
-
   if (fetchError) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="min-h-screen bg-[#0a0b14] flex items-center justify-center">
         <div className="text-center">
-          <p className="text-red-600 mb-4">{fetchError}</p>
-          <Link href="/dashboard" className="text-blue-600 hover:underline">
-            Back to Dashboard
+          <p className="text-red-400 mb-4">{fetchError}</p>
+          <Link href="/new" className="text-blue-400 hover:text-blue-300 transition-colors">
+            Back to Generate
           </Link>
         </div>
       </div>
@@ -170,8 +150,8 @@ export default function JobStatusPage() {
 
   if (!job) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="animate-pulse text-gray-400">Loading...</div>
+      <div className="min-h-screen bg-[#0a0b14] flex items-center justify-center">
+        <Loader2 className="w-6 h-6 text-blue-400 animate-spin" />
       </div>
     );
   }
@@ -180,186 +160,215 @@ export default function JobStatusPage() {
   const isFailed = job.status === "failed";
   const isCompleted = job.status === "completed";
   const isRunning = !isFailed && !isCompleted;
+  const progressPercent = Math.round(
+    ((statusIdx + (isCompleted ? 0 : 0.5)) / (STATUS_STEPS.length - 1)) * 100
+  );
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200">
-        <div className="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
-          <Link href="/dashboard" className="text-lg font-bold text-gray-900">
-            DocuAgent
-          </Link>
-          <Link
-            href="/dashboard"
-            className="text-sm text-gray-500 hover:text-gray-700"
-          >
-            Back to Dashboard
-          </Link>
-        </div>
-      </header>
+    <div className="min-h-screen bg-[#0a0b14] flex flex-col">
+      <Navbar />
 
-      <main className="max-w-4xl mx-auto px-4 py-8 space-y-6">
-        {/* Job info */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <div className="flex items-start justify-between">
-            <div>
-              <h1 className="text-xl font-bold text-gray-900">
-                {job.app_name || new URL(job.app_url).hostname}
-              </h1>
-              <p className="text-sm text-gray-500 mt-1">{job.app_url}</p>
-            </div>
-            {isCompleted && job.result && (
-              <div className="flex items-center gap-2">
+      <main className="flex-1 flex flex-col items-center px-4 py-12">
+        <div className="w-full max-w-lg space-y-8">
+          {/* Top section */}
+          <div className="text-center">
+            {isRunning && (
+              <div className="w-14 h-14 rounded-full bg-blue-600/10 border border-blue-500/20 flex items-center justify-center mx-auto mb-4">
+                <Loader2 className="w-7 h-7 text-blue-400 animate-spin-slow" />
+              </div>
+            )}
+            {isCompleted && (
+              <div className="w-14 h-14 rounded-full bg-emerald-600/10 border border-emerald-500/20 flex items-center justify-center mx-auto mb-4">
+                <CheckCircle2 className="w-7 h-7 text-emerald-400" />
+              </div>
+            )}
+            {isFailed && (
+              <div className="w-14 h-14 rounded-full bg-red-600/10 border border-red-500/20 flex items-center justify-center mx-auto mb-4">
+                <XCircle className="w-7 h-7 text-red-400" />
+              </div>
+            )}
+
+            <h1 className="text-2xl font-bold text-white">
+              {isCompleted
+                ? "Documentation ready!"
+                : isFailed
+                  ? "Generation failed"
+                  : "Generating documentation"}
+            </h1>
+            <p className="text-gray-400 text-sm mt-1">
+              {isCompleted
+                ? `${job.app_name || new URL(job.app_url).hostname}`
+                : isFailed
+                  ? job.error || "An error occurred during generation"
+                  : "This will take a few minutes"}
+            </p>
+          </div>
+
+          {/* Completed stats + actions */}
+          {isCompleted && job.result && (
+            <>
+              {/* Stats grid */}
+              <div className="grid grid-cols-4 gap-3">
+                <GlassCard className="p-4 text-center">
+                  <Monitor className="w-4 h-4 text-blue-400 mx-auto mb-1" />
+                  <p className="text-xl font-bold text-white">
+                    {job.result.total_screens}
+                  </p>
+                  <p className="text-[10px] text-gray-500">Screens</p>
+                </GlassCard>
+                <GlassCard className="p-4 text-center">
+                  <Route className="w-4 h-4 text-blue-400 mx-auto mb-1" />
+                  <p className="text-xl font-bold text-white">
+                    {job.result.journeys_completed}/{job.result.journeys_total}
+                  </p>
+                  <p className="text-[10px] text-gray-500">Journeys</p>
+                </GlassCard>
+                <GlassCard className="p-4 text-center">
+                  <Award className="w-4 h-4 text-blue-400 mx-auto mb-1" />
+                  <p className="text-xl font-bold text-white">
+                    {job.quality_score ?? "\u2014"}%
+                  </p>
+                  <p className="text-[10px] text-gray-500">Quality</p>
+                </GlassCard>
+                <GlassCard className="p-4 text-center">
+                  <DollarSign className="w-4 h-4 text-blue-400 mx-auto mb-1" />
+                  <p className="text-xl font-bold text-white">
+                    ${((job.result.actual_cost_cents ?? 0) / 100).toFixed(2)}
+                  </p>
+                  <p className="text-[10px] text-gray-500">Cost</p>
+                </GlassCard>
+              </div>
+
+              {/* Action buttons */}
+              <div className="flex gap-3">
                 <Link
                   href={`/jobs/${id}/docs`}
-                  className="inline-flex items-center gap-2 bg-blue-600 text-white rounded-md px-4 py-2 text-sm font-medium hover:bg-blue-700 transition-colors"
+                  className="btn-primary flex-1 text-sm"
                 >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                  </svg>
+                  <FileText className="w-4 h-4" />
                   View Documentation
                 </Link>
                 {job.result.zip_url && (
                   <a
                     href={job.result.zip_url}
                     download
-                    className="inline-flex items-center gap-2 bg-gray-100 text-gray-700 rounded-md px-4 py-2 text-sm font-medium hover:bg-gray-200 transition-colors"
+                    className="btn-ghost text-sm"
                   >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
-                    .zip
+                    <Download className="w-4 h-4" />
+                    Download .zip
                   </a>
                 )}
               </div>
-            )}
-          </div>
 
-          {/* Stats row for completed jobs */}
-          {isCompleted && job.result && (
-            <div className="mt-4 grid grid-cols-4 gap-4">
-              <div className="bg-gray-50 rounded-md p-3 text-center">
-                <p className="text-2xl font-bold text-gray-900">
-                  {job.result.total_screens}
-                </p>
-                <p className="text-xs text-gray-500">Screens</p>
+              {/* Additional journeys upsell */}
+              {job.result.additional_journeys &&
+                job.result.additional_journeys.length > 0 && (
+                  <GlassCard className="p-4">
+                    <p className="text-sm text-gray-400">
+                      {job.result.additional_journeys.length} more journeys
+                      available \u2014 upgrade for full documentation
+                    </p>
+                  </GlassCard>
+                )}
+            </>
+          )}
+
+          {/* Progress card */}
+          {!isFailed && (
+            <GlassCard className="p-6">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-sm font-medium text-gray-300">
+                  Progress
+                </span>
+                <span className="text-sm text-gray-400">
+                  {isCompleted ? 100 : progressPercent}%
+                </span>
               </div>
-              <div className="bg-gray-50 rounded-md p-3 text-center">
-                <p className="text-2xl font-bold text-gray-900">
-                  {job.result.journeys_completed}/{job.result.journeys_total}
-                </p>
-                <p className="text-xs text-gray-500">Journeys</p>
+
+              {/* Progress bar */}
+              <div className="h-1.5 bg-white/5 rounded-full overflow-hidden mb-6">
+                <div
+                  className="h-full bg-blue-600 rounded-full transition-all duration-700"
+                  style={{
+                    width: `${isCompleted ? 100 : progressPercent}%`,
+                  }}
+                />
               </div>
-              <div className="bg-gray-50 rounded-md p-3 text-center">
-                <p className="text-2xl font-bold text-gray-900">
-                  {job.quality_score ?? "—"}%
-                </p>
-                <p className="text-xs text-gray-500">Quality</p>
+
+              {/* Stage checklist */}
+              <div className="space-y-1">
+                {STATUS_STEPS.map((step, i) => {
+                  const isCurrent = i === statusIdx && isRunning;
+                  const isDone = i < statusIdx || isCompleted;
+                  return (
+                    <div
+                      key={step.key}
+                      className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
+                        isCurrent ? "bg-blue-600/10" : ""
+                      }`}
+                    >
+                      {isDone ? (
+                        <CheckCircle2 className="w-4 h-4 text-blue-400 flex-shrink-0" />
+                      ) : isCurrent ? (
+                        <div className="w-4 h-4 rounded-full border-2 border-blue-400 flex items-center justify-center flex-shrink-0">
+                          <div className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+                        </div>
+                      ) : (
+                        <Circle className="w-4 h-4 text-gray-600 flex-shrink-0" />
+                      )}
+                      <span
+                        className={`text-sm ${
+                          isDone
+                            ? "text-gray-300"
+                            : isCurrent
+                              ? "text-white font-medium"
+                              : "text-gray-500"
+                        }`}
+                      >
+                        {step.label}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
-              <div className="bg-gray-50 rounded-md p-3 text-center">
-                <p className="text-2xl font-bold text-gray-900">
-                  ${((job.result.actual_cost_cents ?? 0) / 100).toFixed(2)}
+            </GlassCard>
+          )}
+
+          {/* Failed error display */}
+          {isFailed && (
+            <GlassCard className="p-6 border-red-500/20">
+              <p className="text-sm text-red-400">{job.error || "Unknown error occurred"}</p>
+              <Link
+                href="/new"
+                className="btn-primary text-sm mt-4 inline-flex"
+              >
+                Try Again
+              </Link>
+            </GlassCard>
+          )}
+
+          {/* Agent activity */}
+          {isRunning && (
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <Sparkles className="w-4 h-4 text-gray-400" />
+                <span className="text-sm font-medium text-gray-300">
+                  Agent activity
+                </span>
+              </div>
+              <div className="flex items-start gap-3">
+                {/* Thinking dots */}
+                <div className="flex gap-1 pt-1.5 flex-shrink-0">
+                  <div className="w-1.5 h-1.5 rounded-full bg-blue-400 thinking-dot" />
+                  <div className="w-1.5 h-1.5 rounded-full bg-blue-400 thinking-dot" />
+                  <div className="w-1.5 h-1.5 rounded-full bg-blue-400 thinking-dot" />
+                </div>
+                <p className="text-sm text-gray-400 leading-relaxed">
+                  {latestMessage || "Initializing documentation pipeline..."}
                 </p>
-                <p className="text-xs text-gray-500">Cost</p>
               </div>
             </div>
           )}
-        </div>
-
-        {/* Progress bar */}
-        {!isFailed && (
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h2 className="text-sm font-medium text-gray-700 mb-4">
-              Pipeline Progress
-            </h2>
-            <div className="flex items-center gap-1">
-              {STATUS_STEPS.map((step, i) => {
-                const isActive = i === statusIdx && isRunning;
-                const isDone = i < statusIdx || isCompleted;
-                return (
-                  <div key={step.key} className="flex-1">
-                    <div
-                      className={`h-2 rounded-full transition-colors ${
-                        isDone
-                          ? "bg-blue-600"
-                          : isActive
-                            ? "bg-blue-400 animate-pulse"
-                            : "bg-gray-200"
-                      }`}
-                    />
-                    <p
-                      className={`text-xs mt-1 text-center truncate ${
-                        isDone || isActive ? "text-blue-600 font-medium" : "text-gray-400"
-                      }`}
-                    >
-                      {step.label}
-                    </p>
-                  </div>
-                );
-              })}
-            </div>
-            {isRunning && job.progress?.current_step && (
-              <p className="text-sm text-gray-500 mt-3">
-                {job.progress.current_step}
-              </p>
-            )}
-          </div>
-        )}
-
-        {/* Error display */}
-        {isFailed && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-6">
-            <h2 className="text-red-800 font-medium mb-2">Job Failed</h2>
-            <p className="text-sm text-red-700">{job.error || "Unknown error"}</p>
-          </div>
-        )}
-
-        {/* Progress messages feed */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200">
-          <div className="px-6 py-4 border-b border-gray-100">
-            <h2 className="text-sm font-medium text-gray-700">Activity Log</h2>
-          </div>
-          <div
-            ref={feedRef}
-            className="max-h-[500px] overflow-y-auto divide-y divide-gray-50"
-          >
-            {messages.length === 0 && (
-              <div className="px-6 py-8 text-center text-sm text-gray-400">
-                {isRunning
-                  ? "Waiting for updates..."
-                  : "No activity recorded."}
-              </div>
-            )}
-            {messages.map((msg, i) => (
-              <div key={i} className="px-6 py-3 flex gap-3">
-                <div className="flex-shrink-0 mt-0.5">
-                  {msg.type === "error" ? (
-                    <span className="inline-block w-2 h-2 rounded-full bg-red-400" />
-                  ) : msg.type === "screenshot" ? (
-                    <span className="inline-block w-2 h-2 rounded-full bg-green-400" />
-                  ) : msg.type === "complete" ? (
-                    <span className="inline-block w-2 h-2 rounded-full bg-blue-400" />
-                  ) : (
-                    <span className="inline-block w-2 h-2 rounded-full bg-gray-300" />
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-gray-700">{msg.message}</p>
-                  {msg.screenshot_url && (
-                    <img
-                      src={msg.screenshot_url}
-                      alt="Screenshot"
-                      className="mt-2 rounded-md border border-gray-200 max-w-xs"
-                      loading="lazy"
-                    />
-                  )}
-                </div>
-                <span className="text-xs text-gray-400 flex-shrink-0">
-                  {formatTime(msg.created_at)}
-                </span>
-              </div>
-            ))}
-          </div>
         </div>
       </main>
     </div>

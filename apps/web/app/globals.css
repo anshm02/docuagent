@@ -2,7 +2,117 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
+@layer base {
+  body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, sans-serif;
+    background-color: #0a0b14;
+    color: #e5e7eb;
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-white/5 border border-white/10 backdrop-blur-sm rounded-xl;
+  }
+
+  .glass-input {
+    @apply w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 text-white placeholder-gray-500
+      focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50
+      transition-all duration-200;
+  }
+
+  .btn-primary {
+    @apply bg-blue-600 text-white rounded-lg px-6 py-3 font-medium
+      hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed
+      transition-all duration-200 inline-flex items-center justify-center gap-2;
+  }
+
+  .btn-ghost {
+    @apply bg-white/5 border border-white/10 text-white rounded-lg px-6 py-3 font-medium
+      hover:bg-white/10 transition-all duration-200 inline-flex items-center justify-center gap-2;
+  }
+}
+
+/* Dark theme prose overrides for docs viewer */
+.dark-prose {
+  color: #d1d5db;
+}
+.dark-prose h1,
+.dark-prose h2,
+.dark-prose h3,
+.dark-prose h4 {
+  color: #ffffff;
+  font-weight: 700;
+}
+.dark-prose a {
+  color: #3b82f6;
+}
+.dark-prose strong {
+  color: #ffffff;
+}
+.dark-prose table th {
+  background: rgba(255, 255, 255, 0.05);
+  color: #ffffff;
+}
+.dark-prose table td {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+.dark-prose table th {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+.dark-prose blockquote {
+  border-left-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.1);
+  padding: 1rem;
+  border-radius: 0.5rem;
+}
+.dark-prose img {
+  border-radius: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+.dark-prose code {
+  background: rgba(255, 255, 255, 0.1);
+  color: #e5e7eb;
+  padding: 0.2em 0.4em;
+  border-radius: 0.25rem;
+}
+.dark-prose pre {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.5rem;
+}
+.dark-prose pre code {
+  background: transparent;
+  padding: 0;
+}
+.dark-prose hr {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+.dark-prose li::marker {
+  color: #6b7280;
+}
+
+/* Thinking/breathing animation for agent activity */
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+.thinking-dot {
+  animation: thinking-pulse 1.4s ease-in-out infinite;
+}
+.thinking-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.thinking-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+/* Spinner animation */
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.animate-spin-slow {
+  animation: spin-slow 2s linear infinite;
 }

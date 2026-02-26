@@ -120,34 +120,34 @@ Check off each task as completed. Claude: update this file immediately after com
 ## Phase 3: Frontend UI Overhaul
 
 ### Auth simplification
-- [ ] Single /login page: email + password, toggle "Sign in" / "Create account"
-- [ ] On signup: auto-create profile with 300 credits ($3.00)
-- [ ] After auth: redirect to /new
-- [ ] Remove /dashboard (redirect to /new)
+- [x] Single /login page: email + password, toggle "Sign in" / "Create account"
+- [x] On signup: auto-create profile with 300 credits ($3.00)
+- [x] After auth: redirect to /new
+- [x] Remove /dashboard (redirect to /new)
 
 ### Generate page (/new)
-- [ ] Required fields: App URL, Login URL, Username, Password
-- [ ] Optional collapsed section: GitHub URL, PRD upload, Product Description
-- [ ] Localhost detection: yellow callout with ngrok instructions
-- [ ] Show remaining credits: "$X.XX remaining"
+- [x] Required fields: App URL, Login URL, Username, Password
+- [x] Optional collapsed section: GitHub URL, PRD upload, Product Description
+- [x] Localhost detection: yellow callout with ngrok instructions
+- [x] Show remaining credits: "$X.XX remaining"
 - [ ] If completed job exists: banner "Your last docs are ready → View"
 
 ### Progress page (/jobs/[id]) overhaul
-- [ ] Top: large current status text + pulsing animation
-- [ ] Show code analysis summary when complete (what was extracted)
-- [ ] Show PRD summary when complete (what was understood)
-- [ ] Show discovery summary (accessible pages found)
-- [ ] Show journey plan card: all planned journeys with step counts. Note if any journeys were cut for budget. Checkmarks on completion.
-- [ ] Show budget: "Estimated: $X.XX / Credits: $X.XX remaining"
-- [ ] Activity feed: larger screenshots, grouped by journey, color-coded
-- [ ] Completion: "Documentation Ready!" + "View Documentation →" button + "Download .zip" + stats + actual cost
+- [x] Top: large current status text + pulsing animation
+- [x] Show code analysis summary when complete (what was extracted)
+- [x] Show PRD summary when complete (what was understood)
+- [x] Show discovery summary (accessible pages found)
+- [x] Show journey plan card: all planned journeys with step counts. Note if any journeys were cut for budget. Checkmarks on completion.
+- [x] Show budget: "Estimated: $X.XX / Credits: $X.XX remaining"
+- [x] Activity feed: larger screenshots, grouped by journey, color-coded
+- [x] Completion: "Documentation Ready!" + "View Documentation →" button + "Download .zip" + stats + actual cost
 
 ### Landing page (/)
-- [ ] Hero: "End-user documentation for your SaaS, generated in minutes"
-- [ ] Subtext + one CTA: "Get Started Free →"
-- [ ] "How it works" — 3 steps
-- [ ] Nothing else. Minimal.
-- [ ] **TEST**: Full flow walkthrough with screenshots of every page.
+- [x] Hero: "End-user documentation for your SaaS, generated in minutes"
+- [x] Subtext + one CTA: "Get Started Free →"
+- [x] "How it works" — 3 steps
+- [x] Nothing else. Minimal.
+- [x] **TEST**: Full flow walkthrough with screenshots of every page.
 
 ---
 

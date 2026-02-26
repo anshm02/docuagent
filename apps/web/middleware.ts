@@ -43,6 +43,13 @@ export async function middleware(request: NextRequest) {
     return supabaseResponse;
   }
 
+  // Redirect /dashboard to /new
+  if (pathname === "/dashboard") {
+    const url = request.nextUrl.clone();
+    url.pathname = "/new";
+    return NextResponse.redirect(url);
+  }
+
   // Redirect unauthenticated users to login
   if (!user) {
     const url = request.nextUrl.clone();

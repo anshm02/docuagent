@@ -3,15 +3,21 @@
 import { createClient } from "@/lib/supabase/client";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { Download, Lock } from "lucide-react";
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_URL!;
 
 interface SidebarItem {
   title: string;
   slug: string;
+}
+
+interface TocItem {
+  id: string;
+  text: string;
 }
 
 interface JobData {
@@ -40,6 +46,23 @@ function parseIndexForSidebar(indexContent: string): SidebarItem[] {
   return items;
 }
 
+function extractHeadings(markdown: string): TocItem[] {
+  const headings: TocItem[] = [];
+  const lines = markdown.split("\n");
+  for (const line of lines) {
+    const match = line.match(/^##\s+(.+)/);
+    if (match) {
+      const text = match[1].trim();
+      const id = text
+        .toLowerCase()
+        .replace(/[^\w\s-]/g, "")
+        .replace(/\s+/g, "-");
+      headings.push({ id, text });
+    }
+  }
+  return headings;
+}
+
 function getStorageBasePath(jobId: string): string {
   return `docs/${jobId}`;
 }
@@ -52,13 +75,29 @@ export default function DocsViewerPage() {
   const [markdownContent, setMarkdownContent] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [activeHeading, setActiveHeading] = useState("");
+  const [imageBaseUrl, setImageBaseUrl] = useState("");
 
-  const supabase = createClient();
+  // Memoize supabase client to avoid recreating on every render
+  const supabase = useMemo(() => createClient(), []);
+
+  // Extract h2 headings for "ON THIS PAGE" sidebar
+  const tocItems = useMemo(() => extractHeadings(markdownContent), [markdownContent]);
+
+  // Compute image base URL once
+  useEffect(() => {
+    const basePath = getStorageBasePath(id);
+    const { data: storageUrl } = supabase.storage
+      .from("documents")
+      .getPublicUrl(`${basePath}/images/placeholder`);
+    setImageBaseUrl(storageUrl.publicUrl.replace("/placeholder", ""));
+  }, [id, supabase]);
 
   // Fetch a markdown file from Supabase Storage
   const fetchMarkdown = useCallback(
     async (slug: string) => {
       setLoading(true);
+      setError("");
       try {
         const basePath = getStorageBasePath(id);
         const filePath = `${basePath}/${slug}.md`;
@@ -68,32 +107,45 @@ export default function DocsViewerPage() {
           .download(filePath);
 
         if (downloadErr || !data) {
-          setMarkdownContent(`# Not Found\n\nCould not load \`${slug}.md\`.`);
+          console.error("Download error:", downloadErr);
+          // Try alternative path patterns
+          const altPath = `${basePath}/${slug}`;
+          const { data: altData, error: altErr } = await supabase.storage
+            .from("documents")
+            .download(altPath);
+
+          if (altErr || !altData) {
+            setMarkdownContent(`# Not Found\n\nCould not load \`${slug}.md\`. The file may not exist yet.`);
+            setLoading(false);
+            return;
+          }
+
+          let content = await altData.text();
+          content = rewriteImagePaths(content);
+          setMarkdownContent(content);
           setLoading(false);
           return;
         }
 
         let content = await data.text();
-
-        // Rewrite relative image paths to Supabase Storage URLs
-        const { data: storageUrl } = supabase.storage
-          .from("documents")
-          .getPublicUrl(`${basePath}/images/placeholder`);
-        const imageBaseUrl = storageUrl.publicUrl.replace("/placeholder", "");
-
-        content = content.replace(
-          /!\[([^\]]*)\]\(\.\/images\/([^)]+)\)/g,
-          `![$1](${imageBaseUrl}/$2)`,
-        );
-
+        content = rewriteImagePaths(content);
         setMarkdownContent(content);
-      } catch {
+      } catch (err) {
+        console.error("Failed to fetch markdown:", err);
         setMarkdownContent("# Error\n\nFailed to load documentation.");
       }
       setLoading(false);
     },
-    [id, supabase],
+    [id, supabase, imageBaseUrl],
   );
+
+  function rewriteImagePaths(content: string): string {
+    if (!imageBaseUrl) return content;
+    return content.replace(
+      /!\[([^\]]*)\]\(\.\/images\/([^)]+)\)/g,
+      `![$1](${imageBaseUrl}/$2)`,
+    );
+  }
 
   // Fetch job data
   useEffect(() => {
@@ -113,17 +165,55 @@ export default function DocsViewerPage() {
     loadJob();
   }, [id]);
 
-  // Load index.md for sidebar
+  // Load index.md for sidebar and initial content
   useEffect(() => {
     async function loadIndex() {
       try {
         const basePath = getStorageBasePath(id);
+
+        // First try to list files to confirm docs exist
+        const { data: fileList, error: listErr } = await supabase.storage
+          .from("documents")
+          .list(basePath);
+
+        if (listErr) {
+          console.error("List error:", listErr);
+        }
+
+        if (fileList) {
+          console.log("Files found in storage:", fileList.map(f => f.name));
+        }
+
+        // Download index.md
         const { data, error: downloadErr } = await supabase.storage
           .from("documents")
           .download(`${basePath}/index.md`);
 
         if (downloadErr || !data) {
+          console.error("Index download error:", downloadErr);
+
+          // If index.md doesn't exist, try to find any .md files and build navigation
+          if (fileList && fileList.length > 0) {
+            const mdFiles = fileList.filter(f => f.name.endsWith(".md"));
+            if (mdFiles.length > 0) {
+              const items = mdFiles
+                .filter(f => f.name !== "index.md")
+                .map(f => ({
+                  title: f.name.replace(".md", "").replace(/-/g, " ").replace(/\b\w/g, c => c.toUpperCase()),
+                  slug: f.name.replace(".md", ""),
+                }));
+              setSidebarItems(items);
+
+              // Load the first available file
+              const firstFile = mdFiles[0];
+              await fetchMarkdown(firstFile.name.replace(".md", ""));
+              setActiveSlug(firstFile.name.replace(".md", ""));
+              return;
+            }
+          }
+
           setError("Documentation not found. The job may still be processing.");
+          setLoading(false);
           return;
         }
 
@@ -131,25 +221,37 @@ export default function DocsViewerPage() {
         const items = parseIndexForSidebar(indexContent);
         setSidebarItems(items);
 
-        // Load index.md as initial content
-        setMarkdownContent(indexContent);
+        // Load index content with image path rewriting
+        let content = indexContent;
+        if (imageBaseUrl) {
+          content = content.replace(
+            /!\[([^\]]*)\]\(\.\/images\/([^)]+)\)/g,
+            `![$1](${imageBaseUrl}/$2)`,
+          );
+        }
+        setMarkdownContent(content);
         setLoading(false);
-      } catch {
+      } catch (err) {
+        console.error("Failed to load index:", err);
         setError("Failed to load documentation index.");
+        setLoading(false);
       }
     }
-    loadIndex();
-  }, [id, supabase]);
+    if (imageBaseUrl) {
+      loadIndex();
+    }
+  }, [id, supabase, imageBaseUrl, fetchMarkdown]);
 
   // Handle sidebar navigation
   const handleNavClick = (slug: string) => {
     setActiveSlug(slug);
     if (slug === "index") {
-      // Re-fetch index
       fetchMarkdown("index");
     } else {
       fetchMarkdown(slug);
     }
+    // Scroll main content to top
+    document.getElementById("docs-main")?.scrollTo(0, 0);
   };
 
   // Handle internal markdown links
@@ -161,12 +263,21 @@ export default function DocsViewerPage() {
     }
   };
 
+  // Scroll to heading
+  const scrollToHeading = (headingId: string) => {
+    setActiveHeading(headingId);
+    const el = document.getElementById(headingId);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
+
   if (error) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="min-h-screen bg-[#0a0b14] flex items-center justify-center">
         <div className="text-center">
-          <p className="text-red-600 mb-4">{error}</p>
-          <Link href={`/jobs/${id}`} className="text-blue-600 hover:underline">
+          <p className="text-red-400 mb-4">{error}</p>
+          <Link href={`/jobs/${id}`} className="text-blue-400 hover:text-blue-300 transition-colors">
             Back to Job Status
           </Link>
         </div>
@@ -174,37 +285,22 @@ export default function DocsViewerPage() {
     );
   }
 
-  const appName = job?.app_name || "Documentation";
-
   return (
-    <div className="min-h-screen bg-white flex flex-col">
+    <div className="min-h-screen bg-[#0d0e1a] flex flex-col">
       {/* Header */}
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Link
-              href={`/jobs/${id}`}
-              className="text-gray-400 hover:text-gray-600 transition-colors"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-              </svg>
-            </Link>
-            <h1 className="text-lg font-semibold text-gray-900">
-              {appName}
-            </h1>
-            <span className="text-sm text-gray-400">Documentation</span>
-          </div>
+      <header className="sticky top-0 z-50 border-b border-white/5 bg-[#0d0e1a]/95 backdrop-blur-md">
+        <div className="flex items-center justify-between px-6 h-14">
+          <Link href="/" className="text-white font-bold text-lg tracking-tight">
+            docuagent
+          </Link>
           <div className="flex items-center gap-3">
             {job?.result?.zip_url && (
               <a
                 href={job.result.zip_url}
                 download
-                className="inline-flex items-center gap-2 bg-gray-900 text-white rounded-md px-4 py-2 text-sm font-medium hover:bg-gray-800 transition-colors"
+                className="btn-ghost text-xs py-2 px-4"
               >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
+                <Download className="w-3.5 h-3.5" />
                 Download .zip
               </a>
             )}
@@ -212,16 +308,16 @@ export default function DocsViewerPage() {
         </div>
       </header>
 
-      <div className="flex flex-1 max-w-7xl mx-auto w-full">
-        {/* Sidebar */}
-        <aside className="w-64 border-r border-gray-100 bg-gray-50/50 p-4 overflow-y-auto sticky top-[57px] h-[calc(100vh-57px)]">
-          <nav className="space-y-1">
+      <div className="flex flex-1 overflow-hidden">
+        {/* Left sidebar - navigation */}
+        <aside className="w-52 flex-shrink-0 border-r border-white/5 overflow-y-auto h-[calc(100vh-56px)] sticky top-14 p-4">
+          <nav className="space-y-0.5">
             <button
               onClick={() => handleNavClick("index")}
-              className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
+              className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
                 activeSlug === "index"
-                  ? "bg-gray-900 text-white font-medium"
-                  : "text-gray-600 hover:bg-gray-100"
+                  ? "bg-blue-600/15 text-blue-400 font-medium"
+                  : "text-gray-400 hover:text-gray-200 hover:bg-white/5"
               }`}
             >
               Overview
@@ -231,10 +327,10 @@ export default function DocsViewerPage() {
               <button
                 key={item.slug}
                 onClick={() => handleNavClick(item.slug)}
-                className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
+                className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
                   activeSlug === item.slug
-                    ? "bg-gray-900 text-white font-medium"
-                    : "text-gray-600 hover:bg-gray-100"
+                    ? "bg-blue-600/15 text-blue-400 font-medium"
+                    : "text-gray-400 hover:text-gray-200 hover:bg-white/5"
                 }`}
               >
                 {item.title}
@@ -243,35 +339,60 @@ export default function DocsViewerPage() {
           </nav>
 
           {/* Additional journeys upsell */}
-          {job?.result?.additional_journeys && job.result.additional_journeys.length > 0 && (
-            <div className="mt-6 pt-4 border-t border-gray-200">
-              <p className="text-xs font-medium text-gray-400 uppercase tracking-wide px-3 mb-2">
-                Available with upgrade
-              </p>
-              {job.result.additional_journeys.map((j, i) => (
-                <div
-                  key={i}
-                  className="px-3 py-2 text-sm text-gray-400 cursor-not-allowed"
-                  title={j.description}
-                >
-                  {j.title}
-                </div>
-              ))}
-            </div>
-          )}
+          {job?.result?.additional_journeys &&
+            job.result.additional_journeys.length > 0 && (
+              <div className="mt-6 pt-4 border-t border-white/5">
+                <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider px-3 mb-2 flex items-center gap-1">
+                  <Lock className="w-3 h-3" />
+                  Available with upgrade
+                </p>
+                {job.result.additional_journeys.map((j, i) => (
+                  <div
+                    key={i}
+                    className="px-3 py-2 text-sm text-gray-600 cursor-not-allowed"
+                    title={j.description}
+                  >
+                    {j.title}
+                  </div>
+                ))}
+              </div>
+            )}
         </aside>
 
         {/* Main content */}
-        <main className="flex-1 p-8 max-w-3xl">
+        <main
+          id="docs-main"
+          className="flex-1 overflow-y-auto h-[calc(100vh-56px)] px-12 py-8"
+        >
           {loading ? (
             <div className="flex items-center justify-center py-20">
-              <div className="animate-pulse text-gray-400">Loading...</div>
+              <div className="flex gap-1">
+                <div className="w-2 h-2 rounded-full bg-blue-400 thinking-dot" />
+                <div className="w-2 h-2 rounded-full bg-blue-400 thinking-dot" />
+                <div className="w-2 h-2 rounded-full bg-blue-400 thinking-dot" />
+              </div>
             </div>
           ) : (
-            <article className="prose prose-gray max-w-none prose-headings:font-semibold prose-h1:text-2xl prose-h2:text-xl prose-h3:text-lg prose-img:rounded-lg prose-img:border prose-img:border-gray-200 prose-img:shadow-sm prose-table:text-sm prose-th:bg-gray-50 prose-th:font-medium prose-td:border-gray-200 prose-a:text-blue-600 prose-a:no-underline hover:prose-a:underline prose-blockquote:border-blue-300 prose-blockquote:bg-blue-50/50 prose-blockquote:py-1 prose-blockquote:not-italic">
+            <article className="dark-prose prose prose-invert max-w-3xl prose-headings:font-bold prose-h1:text-3xl prose-h2:text-2xl prose-h3:text-lg prose-p:leading-relaxed prose-a:no-underline hover:prose-a:underline prose-table:text-sm prose-li:text-gray-300">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
+                  h2: ({ children, ...props }) => {
+                    const text = typeof children === "string"
+                      ? children
+                      : Array.isArray(children)
+                        ? children.map(c => (typeof c === "string" ? c : "")).join("")
+                        : "";
+                    const headingId = text
+                      .toLowerCase()
+                      .replace(/[^\w\s-]/g, "")
+                      .replace(/\s+/g, "-");
+                    return (
+                      <h2 id={headingId} {...props}>
+                        {children}
+                      </h2>
+                    );
+                  },
                   a: ({ href, children, ...props }) => {
                     if (href && href.startsWith("./") && href.endsWith(".md")) {
                       return (
@@ -282,35 +403,78 @@ export default function DocsViewerPage() {
                             e.preventDefault();
                             handleLinkClick(href);
                           }}
-                          className="text-blue-600 hover:underline cursor-pointer"
+                          className="text-blue-400 hover:text-blue-300 cursor-pointer"
                         >
                           {children}
                         </a>
                       );
                     }
                     return (
-                      <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
+                      <a
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-400 hover:text-blue-300"
+                        {...props}
+                      >
                         {children}
                       </a>
                     );
                   },
-                  img: ({ src, alt, ...props }) => {
-                    return (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={src}
-                        alt={alt || "Screenshot"}
-                        loading="lazy"
-                        className="rounded-lg border border-gray-200 shadow-sm my-4"
-                        {...props}
-                      />
-                    );
-                  },
+                  img: ({ src, alt, ...props }) => (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={src}
+                      alt={alt || "Screenshot"}
+                      loading="lazy"
+                      className="rounded-xl border border-white/10 my-6 w-full"
+                      {...props}
+                    />
+                  ),
+                  table: ({ children, ...props }) => (
+                    <div className="overflow-x-auto my-4">
+                      <table className="w-full" {...props}>
+                        {children}
+                      </table>
+                    </div>
+                  ),
+                  blockquote: ({ children, ...props }) => (
+                    <blockquote
+                      className="border-l-2 border-blue-500 bg-blue-500/5 rounded-r-lg px-4 py-3 my-4 not-italic"
+                      {...props}
+                    >
+                      {children}
+                    </blockquote>
+                  ),
                 }}
               />
             </article>
           )}
         </main>
+
+        {/* Right sidebar - ON THIS PAGE */}
+        {tocItems.length > 0 && (
+          <aside className="w-44 flex-shrink-0 border-l border-white/5 overflow-y-auto h-[calc(100vh-56px)] sticky top-14 p-4">
+            <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-3">
+              On this page
+            </p>
+            <nav className="space-y-1">
+              {tocItems.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => scrollToHeading(item.id)}
+                  className={`block w-full text-left text-xs py-1 transition-colors ${
+                    activeHeading === item.id
+                      ? "text-white font-medium"
+                      : "text-gray-500 hover:text-gray-300"
+                  }`}
+                >
+                  {item.text}
+                </button>
+              ))}
+            </nav>
+          </aside>
+        )}
       </div>
     </div>
   );
