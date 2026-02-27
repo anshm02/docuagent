@@ -240,11 +240,17 @@ export default function NewJobPage() {
                       Your app is running locally
                     </p>
                     <p className="text-xs text-yellow-400/70 mt-1">
-                      Run{" "}
-                      <code className="bg-yellow-500/10 px-1 rounded">
-                        npx ngrok http {appUrl.match(/:(\d+)/)?.[1] || "[port]"}
-                      </code>{" "}
-                      in your terminal and paste the https URL here.
+                      Localhost apps can only be documented when running DocuAgent locally.
+                      For the hosted version, use a public URL or tunnel your app with{" "}
+                      <a
+                        href="https://ngrok.com"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="underline text-yellow-400"
+                      >
+                        ngrok
+                      </a>
+                      .
                     </p>
                   </div>
                 )}

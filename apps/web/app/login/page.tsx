@@ -73,7 +73,7 @@ function LoginForm() {
       {/* Back link */}
       <div className="p-6">
         <button
-          onClick={() => router.push("/")}
+          onClick={() => { window.location.href = "/"; }}
           className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-300 transition-colors"
         >
           <ArrowLeft className="w-4 h-4" />

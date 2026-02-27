@@ -80,12 +80,29 @@ async function analyzeScreen(
     navPath: screen.nav_path ?? "",
   });
 
-  // Call Claude Vision
+  // Call Claude Vision with 429 retry
+  async function callVision(): Promise<string> {
+    try {
+      return await claudeVision(prompt, imageBase64, {
+        maxTokens: 2000,
+        temperature: 0,
+      });
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg.includes("429") || msg.includes("rate_limit") || msg.includes("Rate limit")) {
+        console.log(`[screen-analysis] Rate limited. Waiting 60s and retrying...`);
+        await new Promise((r) => setTimeout(r, 60000));
+        return await claudeVision(prompt, imageBase64, {
+          maxTokens: 2000,
+          temperature: 0,
+        });
+      }
+      throw error;
+    }
+  }
+
   try {
-    const raw = await claudeVision(prompt, imageBase64, {
-      maxTokens: 2000,
-      temperature: 0,
-    });
+    const raw = await callVision();
     const analysis = parseJsonResponse<ScreenAnalysis>(raw);
 
     // Validate required fields
@@ -231,6 +248,12 @@ export async function runScreenAnalysis(config: AnalysisConfig): Promise<Analysi
         return result;
       }),
     );
+
+    // Rate limit: wait 20s between batches
+    if (i + CONCURRENT_ANALYSIS_BATCH < screens.length) {
+      console.log("[screen-analysis] Waiting 20s before next batch (rate limit)...");
+      await new Promise((r) => setTimeout(r, 20000));
+    }
   }
 
   const averageConfidence = analyzedCount > 0 ? totalConfidence / analyzedCount : 0;

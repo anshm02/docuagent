@@ -6,7 +6,7 @@ export const SETTLE_DELAY_MS = 1000;
 export const MODAL_DELAY_MS = 800;
 export const CONFIDENCE_THRESHOLD = 4;
 export const QUALITY_SCORE_MIN = 60;
-export const CONCURRENT_ANALYSIS_BATCH = 5;
+export const CONCURRENT_ANALYSIS_BATCH = 3;
 
 // --- Cost Budget System (V2) ---
 export const DEFAULT_CREDITS_CENTS = 300; // $3.00

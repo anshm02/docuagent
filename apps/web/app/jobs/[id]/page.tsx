@@ -282,7 +282,7 @@ export default function JobStatusPage() {
                     <ul className="space-y-1.5">
                       {job.result.additional_features.map((f, i) => (
                         <li key={i} className="flex items-center gap-2 text-sm text-gray-500">
-                          <ClipboardList className="w-3.5 h-3.5 flex-shrink-0" />
+                          <span className="flex-shrink-0 w-4 text-center">&mdash;</span>
                           {f.title}
                         </li>
                       ))}
