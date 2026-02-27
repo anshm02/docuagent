@@ -37,12 +37,6 @@ export interface MarkdownGenResult {
   durationSeconds: number;
 }
 
-interface ScreenWithImage {
-  screen: Screen;
-  imageBuffer: Buffer | null;
-  imageFilename: string;
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -55,13 +49,27 @@ function slugify(text: string): string {
     .substring(0, 60);
 }
 
+function getScreenshotType(filename: string): string {
+  if (filename.includes("-form-filled") || filename.includes("-filled"))
+    return "form-filled";
+  if (filename.includes("-modal-open")) return "modal-open";
+  if (filename.includes("-tab-")) return "tab";
+  if (filename.includes("-result")) return "result";
+  if (filename.includes("-scrolled")) return "scrolled";
+  if (filename.includes("-expanded")) return "expanded";
+  if (filename.includes("-tooltip")) return "tooltip";
+  return "hero";
+}
+
 async function fetchScreenshotBuffer(url: string): Promise<Buffer | null> {
   try {
     const response = await fetch(url);
     if (!response.ok) return null;
     const contentType = response.headers.get("content-type") ?? "";
     if (contentType.includes("text/html")) {
-      console.log(`[md-gen] Got HTML instead of image for ${url}, retrying after 3s...`);
+      console.log(
+        `[md-gen] Got HTML instead of image for ${url}, retrying after 3s...`,
+      );
       await new Promise((r) => setTimeout(r, 3000));
       const retry = await fetch(url);
       if (!retry.ok) return null;
@@ -78,7 +86,10 @@ async function fetchScreenshotBuffer(url: string): Promise<Buffer | null> {
   }
 }
 
-async function broadcastProgress(jobId: string, message: string): Promise<void> {
+async function broadcastProgress(
+  jobId: string,
+  message: string,
+): Promise<void> {
   try {
     const supabase = getSupabase();
     await supabase.from("progress_messages").insert({
@@ -96,44 +107,55 @@ async function broadcastProgress(jobId: string, message: string): Promise<void> 
 // ---------------------------------------------------------------------------
 
 async function generateFeaturePageContent(
-  featureName: string,
-  featureDescription: string,
+  feature: Feature,
   screens: Screen[],
   prdSummary: PRDSummary | null,
+  otherFeatures: { name: string; slug: string }[],
+  screenshotFilenames: Map<string, string>,
 ): Promise<FeaturePageContent> {
   const screenAnalyses = screens
     .filter((s) => s.analysis)
-    .map((s) => ({
-      navPath: s.nav_path ?? "",
-      analysis: s.analysis as ScreenAnalysis,
-      screenshotRef: `screen_${s.order_index}`,
-      screenshotLabel: (s as any).screenshot_label ?? "hero",
-      codeContext: s.code_context,
-    }));
+    .map((s) => {
+      const ref = `screen_${s.order_index}`;
+      const filename = screenshotFilenames.get(ref) ?? `${ref}.png`;
+      const screenshotType = getScreenshotType(filename);
+      return {
+        screenshotType,
+        analysis: s.analysis as ScreenAnalysis,
+        screenshotRef: filename,
+      };
+    });
 
   if (screenAnalyses.length === 0) {
     return {
-      title: featureName,
-      slug: slugify(featureName),
-      intro: featureDescription,
-      action_groups: [{ heading: featureName, steps: [{ action: "Follow the on-screen instructions." }] }],
+      title: feature.name,
+      slug: slugify(feature.name),
+      intro: feature.description,
+      action_groups: [
+        {
+          heading: feature.name,
+          steps: [{ action: "Follow the on-screen instructions." }],
+        },
+      ],
       permission_notes: [],
       fields: [],
       hero_screenshot_ref: "",
     };
   }
 
+  // Collect code context from hero screen
+  const heroScreen = screens.find(
+    (s) => s.nav_path && !s.nav_path.includes("("),
+  );
+  const codeContext = heroScreen?.code_context ?? null;
+
   const prompt = featureProsePrompt({
-    featureName,
-    featureDescription,
+    featureName: feature.name,
+    featureSlug: feature.slug,
     screenAnalyses,
-    prdSummary: prdSummary
-      ? {
-          product_purpose: prdSummary.product_purpose,
-          main_features: prdSummary.main_features,
-          user_roles: prdSummary.user_roles,
-        }
-      : null,
+    otherFeatures,
+    prdSummary,
+    codeContext,
   });
 
   try {
@@ -141,30 +163,48 @@ async function generateFeaturePageContent(
     const parsed = parseJsonResponse<{
       title: string;
       intro: string;
+      hero_screenshot_ref?: string;
       action_groups: {
         heading: string;
         steps: { action: string; detail?: string }[];
-        screenshot_ref?: string;
+        screenshot_ref?: string | null;
+        outcome?: string;
       }[];
       permission_notes?: string[];
-      fields?: { label: string; type: string; required: boolean; description: string }[];
+      fields?: {
+        label: string;
+        type: string;
+        required: boolean;
+        description: string;
+      }[];
+      tips?: string[];
     }>(raw);
 
     return {
-      title: parsed.title || featureName,
-      slug: slugify(parsed.title || featureName),
+      title: parsed.title || feature.name,
+      slug: slugify(parsed.title || feature.name),
       intro: parsed.intro,
-      action_groups: parsed.action_groups ?? [],
+      action_groups: (parsed.action_groups ?? []).map((ag) => ({
+        ...ag,
+        screenshot_ref: ag.screenshot_ref ?? undefined,
+      })),
       permission_notes: parsed.permission_notes ?? [],
       fields: parsed.fields ?? [],
-      hero_screenshot_ref: screenAnalyses[0]?.screenshotRef ?? "",
+      hero_screenshot_ref:
+        parsed.hero_screenshot_ref ??
+        screenAnalyses[0]?.screenshotRef ??
+        "",
+      tips: parsed.tips ?? [],
     };
   } catch (err) {
-    console.error(`[md-gen] Feature prose generation failed for "${featureName}":`, err);
+    console.error(
+      `[md-gen] Feature prose generation failed for "${feature.name}":`,
+      err,
+    );
     return {
-      title: featureName,
-      slug: slugify(featureName),
-      intro: featureDescription,
+      title: feature.name,
+      slug: slugify(feature.name),
+      intro: feature.description,
       action_groups: screenAnalyses.map((sa) => ({
         heading: sa.analysis.page_title,
         steps: sa.analysis.actions.map((a) => ({ action: a.description })),
@@ -181,16 +221,91 @@ async function generateOverview(
   appUrl: string,
   features: { name: string; slug: string; description: string }[],
   prdSummary: PRDSummary | null,
-): Promise<string> {
-  const prompt = overviewPrompt({ appName, appUrl, featureList: features, prdSummary });
+): Promise<{
+  overview: string;
+  featureDescriptions: Map<string, string>;
+}> {
+  const prompt = overviewPrompt({
+    appName,
+    appUrl,
+    featureList: features,
+    prdSummary,
+  });
 
   try {
-    const raw = await claudeText(prompt, { maxTokens: 1000, temperature: 0 });
-    const parsed = parseJsonResponse<{ product_overview: string }>(raw);
-    return parsed.product_overview;
+    const raw = await claudeText(prompt, { maxTokens: 1500, temperature: 0 });
+    const parsed = parseJsonResponse<{
+      product_overview: string;
+      feature_descriptions?: Record<string, string>;
+    }>(raw);
+    return {
+      overview: parsed.product_overview,
+      featureDescriptions: new Map(
+        Object.entries(parsed.feature_descriptions ?? {}),
+      ),
+    };
   } catch (err) {
     console.error("[md-gen] Overview generation failed:", err);
-    return `${appName} is a web application that helps teams manage their workflow.`;
+    return {
+      overview: `${appName} is a web application that helps teams manage their workflow.`,
+      featureDescriptions: new Map(),
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Editorial Review Pass (Part E)
+// ---------------------------------------------------------------------------
+
+async function reviewAndRefineDocumentation(
+  allDocs: { slug: string; title: string; markdown: string }[],
+  appName: string,
+): Promise<Map<string, string>> {
+  const allContent = allDocs
+    .map((d) => `=== ${d.title} (${d.slug}.md) ===\n${d.markdown}`)
+    .join("\n\n");
+
+  const reviewPrompt = `You are a senior technical writing editor reviewing documentation for ${appName}.
+
+Read ALL the documentation pages below, then return improved versions that fix these issues:
+
+1. REMOVE REPETITION: If two pages explain the same concept (e.g., what the Owner role means), keep it on the most relevant page and remove it from the other. Add a brief cross-reference instead.
+
+2. CONSISTENT VOICE: Ensure all pages use the same terminology and tone. Use "click" for buttons, "enter" for text fields, "select" for dropdowns consistently across ALL pages.
+
+3. KILL REMAINING FILLER: If any section just describes basic UI navigation (sidebar, dark mode, search bar), remove it entirely.
+
+4. STRENGTHEN WEAK INTROS: If any page intro describes WHAT the feature is instead of WHY it matters, rewrite it. Every intro should answer "why would I care about this?"
+
+5. ADD MISSING CROSS-REFERENCES: If Feature A creates something that appears in Feature B, mention that connection. "Changes you make here are recorded in the Activity Log."
+
+6. VERIFY SCREENSHOT REFERENCES: Every image reference should match a real screenshot. Don't invent image references that don't exist in the provided content.
+
+7. TIGHTEN STEPS: If any step is longer than one line, shorten it. If any action group has more than 5 steps, split it or remove unnecessary steps.
+
+8. CONTEXTUAL TIPS ONLY: Remove any generic tips like "use a strong password" or "check your spam folder." Only keep tips that are specific to THIS app and THIS feature.
+
+HERE IS ALL THE DOCUMENTATION:
+
+${allContent}
+
+Return a JSON object where keys are slugs and values are the improved markdown content:
+{ "team-management": "# Team Management\\n\\nimproved content...", "general-settings": "..." }
+
+Only return pages that you CHANGED. If a page is already good, omit it from the response.
+
+Return ONLY valid JSON. No markdown, no explanation, no backticks.`;
+
+  try {
+    const raw = await claudeText(reviewPrompt, {
+      maxTokens: 8000,
+      temperature: 0,
+    });
+    const improvements = parseJsonResponse<Record<string, string>>(raw);
+    return new Map(Object.entries(improvements));
+  } catch (err) {
+    console.error("[md-gen] Review pass failed:", err);
+    return new Map();
   }
 }
 
@@ -213,11 +328,20 @@ function buildFeatureMarkdown(
   lines.push("");
 
   // Hero screenshot
-  const heroFilename = screenshotFilenames.get(content.hero_screenshot_ref);
-  if (heroFilename) {
+  const heroFilename = content.hero_screenshot_ref;
+  // Check if this filename exists in our map (by value), or use directly
+  const heroExists =
+    heroFilename &&
+    (Array.from(screenshotFilenames.values()).includes(heroFilename) ||
+      screenshotFilenames.has(content.hero_screenshot_ref));
+  if (heroExists && heroFilename) {
     lines.push(`![${content.title}](./images/${heroFilename})`);
     lines.push("");
   }
+
+  // Track used screenshot filenames to avoid duplicates
+  const usedScreenshots = new Set<string>();
+  if (heroFilename) usedScreenshots.add(heroFilename);
 
   // Action groups
   for (const group of content.action_groups) {
@@ -233,20 +357,32 @@ function buildFeatureMarkdown(
     }
     lines.push("");
 
-    // Action group screenshot
+    // Action group screenshot (after steps, before outcome)
     if (group.screenshot_ref) {
-      const filename = screenshotFilenames.get(group.screenshot_ref);
-      if (filename && filename !== heroFilename) {
-        lines.push(`![${group.heading}](./images/${filename})`);
-        lines.push("");
+      const filename = group.screenshot_ref;
+      if (filename && !usedScreenshots.has(filename)) {
+        const fileExists =
+          Array.from(screenshotFilenames.values()).includes(filename) ||
+          screenshotFilenames.has(filename);
+        if (fileExists) {
+          lines.push(`![${group.heading}](./images/${filename})`);
+          lines.push("");
+          usedScreenshots.add(filename);
+        }
       }
+    }
+
+    // Outcome sentence
+    if (group.outcome) {
+      lines.push(group.outcome);
+      lines.push("");
     }
   }
 
   // Permission notes
   if (content.permission_notes.length > 0) {
     for (const note of content.permission_notes) {
-      lines.push(`> **Note:** ${note}`);
+      lines.push(`> ${note}`);
       lines.push("");
     }
   }
@@ -263,6 +399,14 @@ function buildFeatureMarkdown(
       lines.push(`| ${field.label} | ${field.type} | ${req} | ${desc} |`);
     }
     lines.push("");
+  }
+
+  // Tips
+  if (content.tips && content.tips.length > 0) {
+    for (const tip of content.tips) {
+      lines.push(`> **Tip:** ${tip}`);
+      lines.push("");
+    }
   }
 
   return lines.join("\n");
@@ -282,8 +426,10 @@ function buildIndexMarkdown(
   lines.push("");
   lines.push("## Getting Started");
   lines.push("");
-  lines.push(`1. Go to [${appUrl}](${appUrl}) and create an account with your email and password.`);
-  lines.push("2. Sign in to access the dashboard.");
+  lines.push(
+    `1. Go to [${appUrl}](${appUrl}) and create an account.`,
+  );
+  lines.push("2. Sign in to access your dashboard.");
   lines.push("3. Use the sidebar to navigate between features.");
   lines.push("");
   lines.push("## Features");
@@ -294,7 +440,9 @@ function buildIndexMarkdown(
   lines.push("");
   lines.push("---");
   lines.push("");
-  lines.push(`*Generated by DocuAgent on ${new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}*`);
+  lines.push(
+    `*Generated by DocuAgent on ${new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}*`,
+  );
   lines.push("");
 
   return lines.join("\n");
@@ -410,7 +558,8 @@ async function uploadFile(
   contentType: string,
 ): Promise<string> {
   const supabase = getSupabase();
-  const buffer = typeof content === "string" ? Buffer.from(content, "utf8") : content;
+  const buffer =
+    typeof content === "string" ? Buffer.from(content, "utf8") : content;
 
   const { error } = await supabase.storage
     .from(bucketName)
@@ -424,7 +573,9 @@ async function uploadFile(
     if (retryErr) throw new Error(`Upload failed: ${retryErr.message}`);
   }
 
-  const { data: urlData } = supabase.storage.from(bucketName).getPublicUrl(path);
+  const { data: urlData } = supabase.storage
+    .from(bucketName)
+    .getPublicUrl(path);
   return urlData.publicUrl;
 }
 
@@ -442,7 +593,10 @@ export async function runMarkdownGenerator(
   const basePath = `docs/${config.jobId}`;
 
   console.log("[md-gen] Starting markdown documentation generation...");
-  await broadcastProgress(config.jobId, "Generating markdown documentation...");
+  await broadcastProgress(
+    config.jobId,
+    "Generating markdown documentation...",
+  );
 
   // ----- Fetch all analyzed screens -----
   const { data: allScreens, error: fetchErr } = await supabase
@@ -452,11 +606,14 @@ export async function runMarkdownGenerator(
     .in("status", ["analyzed", "crawled"])
     .order("order_index");
 
-  if (fetchErr) throw new Error(`Failed to fetch screens: ${fetchErr.message}`);
+  if (fetchErr)
+    throw new Error(`Failed to fetch screens: ${fetchErr.message}`);
   const screens = (allScreens ?? []) as Screen[];
   const analyzedScreens = screens.filter((s) => s.analysis);
 
-  console.log(`[md-gen] ${screens.length} screens total, ${analyzedScreens.length} analyzed`);
+  console.log(
+    `[md-gen] ${screens.length} screens total, ${analyzedScreens.length} analyzed`,
+  );
 
   // ----- Fetch + upload screenshots to images/ with descriptive names -----
   console.log("[md-gen] Fetching screenshots...");
@@ -470,8 +627,6 @@ export async function runMarkdownGenerator(
       if (!buf) return;
 
       const ref = `screen_${screen.order_index}`;
-      // Use the descriptive filename from the crawl engine if available
-      // Extract filename from the screenshot_url (e.g., "team-management.png")
       let filename: string;
       try {
         const urlPath = new URL(screen.screenshot_url).pathname;
@@ -497,7 +652,10 @@ export async function runMarkdownGenerator(
 
   // ----- AI Content Generation -----
   console.log("[md-gen] Generating AI content...");
-  await broadcastProgress(config.jobId, "Generating documentation content with AI...");
+  await broadcastProgress(
+    config.jobId,
+    "Generating documentation content with AI...",
+  );
 
   // Group screens by feature
   const featureMap = new Map<string, Screen[]>();
@@ -507,34 +665,88 @@ export async function runMarkdownGenerator(
     featureMap.get(fid)!.push(screen);
   }
 
+  // Build other-features list for cross-references
+  const allFeatureRefs = config.features.map((f) => ({
+    name: f.name,
+    slug: f.slug,
+  }));
+
   // Generate feature page content
-  const featureContents: { content: FeaturePageContent; feature: Feature }[] = [];
+  const featureContents: {
+    content: FeaturePageContent;
+    feature: Feature;
+    markdown: string;
+  }[] = [];
   const mdFiles: { path: string; content: Buffer }[] = [];
 
   for (const feature of config.features) {
     const fScreens = featureMap.get(feature.id) ?? [];
     if (fScreens.length === 0) {
-      console.log(`[md-gen] No analyzed screens for feature: ${feature.name}, skipping`);
+      console.log(
+        `[md-gen] No analyzed screens for feature: ${feature.name}, skipping`,
+      );
       continue;
     }
 
-    console.log(`[md-gen] Generating markdown for feature: ${feature.name} (${fScreens.length} screens)`);
-    await broadcastProgress(config.jobId, `Writing feature page: ${feature.name}`);
+    console.log(
+      `[md-gen] Generating markdown for feature: ${feature.name} (${fScreens.length} screens)`,
+    );
+    await broadcastProgress(
+      config.jobId,
+      `Writing feature page: ${feature.name}`,
+    );
+
+    // Pass other features (excluding self) for cross-references
+    const otherFeatures = allFeatureRefs.filter(
+      (f) => f.slug !== feature.slug,
+    );
 
     const content = await generateFeaturePageContent(
-      feature.name,
-      feature.description,
+      feature,
       fScreens,
       config.prdSummary,
+      otherFeatures,
+      screenshotFilenames,
     );
-    featureContents.push({ content, feature });
 
-    // Build and upload feature .md
+    // Build feature markdown
     const md = buildFeatureMarkdown(content, screenshotFilenames);
-    const featurePath = `${basePath}/${feature.slug}.md`;
-    await uploadFile("documents", featurePath, md, "text/markdown");
-    mdFiles.push({ path: `docs/${feature.slug}.md`, content: Buffer.from(md, "utf8") });
+    featureContents.push({ content, feature, markdown: md });
     sections.push(`Feature: ${content.title}`);
+  }
+
+  // ----- Editorial Review Pass (Part E) -----
+  console.log("[md-gen] Running editorial review pass...");
+  await broadcastProgress(config.jobId, "Running editorial review...");
+
+  const docsForReview = featureContents.map((fc) => ({
+    slug: fc.feature.slug,
+    title: fc.content.title,
+    markdown: fc.markdown,
+  }));
+
+  const improvements = await reviewAndRefineDocumentation(
+    docsForReview,
+    config.appName,
+  );
+
+  // Apply improvements
+  for (const [slug, improvedContent] of improvements) {
+    const existing = featureContents.find((fc) => fc.feature.slug === slug);
+    if (existing) {
+      existing.markdown = improvedContent;
+      console.log(`[md-gen] Refined: ${slug}.md`);
+    }
+  }
+
+  // Upload feature markdown files (after review)
+  for (const fc of featureContents) {
+    const featurePath = `${basePath}/${fc.feature.slug}.md`;
+    await uploadFile("documents", featurePath, fc.markdown, "text/markdown");
+    mdFiles.push({
+      path: `docs/${fc.feature.slug}.md`,
+      content: Buffer.from(fc.markdown, "utf8"),
+    });
   }
 
   // Generate overview content for index.md
@@ -547,26 +759,39 @@ export async function runMarkdownGenerator(
     description: feature.description,
   }));
 
-  const overview = await generateOverview(
+  const { overview, featureDescriptions } = await generateOverview(
     config.appName,
     config.appUrl,
     featureList,
     config.prdSummary,
   );
 
-  // Index (table of contents)
+  // Index (table of contents) — use AI-generated feature descriptions if available
+  const indexFeatures = featureContents.map(({ content, feature }) => {
+    const aiDesc = featureDescriptions.get(feature.slug);
+    return {
+      title: content.title,
+      slug: feature.slug,
+      description: aiDesc || content.intro.split(".")[0] + ".",
+    };
+  });
+
   const indexMd = buildIndexMarkdown(
     config.appName,
     config.appUrl,
     overview,
-    featureContents.map(({ content, feature }) => ({
-      title: content.title,
-      slug: feature.slug,
-      description: content.intro.split(".")[0] + ".",
-    })),
+    indexFeatures,
   );
-  await uploadFile("documents", `${basePath}/index.md`, indexMd, "text/markdown");
-  mdFiles.push({ path: "docs/index.md", content: Buffer.from(indexMd, "utf8") });
+  await uploadFile(
+    "documents",
+    `${basePath}/index.md`,
+    indexMd,
+    "text/markdown",
+  );
+  mdFiles.push({
+    path: "docs/index.md",
+    content: Buffer.from(indexMd, "utf8"),
+  });
   sections.push("Index");
 
   // ----- Generate and upload .zip -----
@@ -583,12 +808,16 @@ export async function runMarkdownGenerator(
     "application/zip",
   );
 
-  console.log(`[md-gen] Zip created: ${(zipBuffer.length / 1024).toFixed(1)} KB`);
+  console.log(
+    `[md-gen] Zip created: ${(zipBuffer.length / 1024).toFixed(1)} KB`,
+  );
 
   // ----- Calculate stats -----
-  const avgConfidence = analyzedScreens.length > 0
-    ? analyzedScreens.reduce((sum, s) => sum + (s.confidence ?? 0), 0) / analyzedScreens.length
-    : 0;
+  const avgConfidence =
+    analyzedScreens.length > 0
+      ? analyzedScreens.reduce((sum, s) => sum + (s.confidence ?? 0), 0) /
+        analyzedScreens.length
+      : 0;
 
   const { data: urlData } = supabase.storage
     .from("documents")
@@ -601,7 +830,12 @@ export async function runMarkdownGenerator(
   console.log(`[md-gen] Sections: ${sections.length}`);
   console.log(`[md-gen] Screenshots: ${screenshotCount}`);
   console.log(`[md-gen] Feature pages: ${featureContents.length}`);
-  console.log(`[md-gen] Zip size: ${(zipBuffer.length / 1024).toFixed(1)} KB`);
+  console.log(
+    `[md-gen] Review refined: ${improvements.size} page(s)`,
+  );
+  console.log(
+    `[md-gen] Zip size: ${(zipBuffer.length / 1024).toFixed(1)} KB`,
+  );
   console.log(`[md-gen] Duration: ${durationSeconds}s`);
 
   return {

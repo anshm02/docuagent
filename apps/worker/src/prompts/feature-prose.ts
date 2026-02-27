@@ -1,86 +1,108 @@
-import type { ScreenAnalysis } from "@docuagent/shared";
+import type { ScreenAnalysis, PRDSummary } from "@docuagent/shared";
 
 export function featureProsePrompt(opts: {
   featureName: string;
-  featureDescription: string;
+  featureSlug: string;
   screenAnalyses: {
-    navPath: string;
+    screenshotType: string; // "hero", "form-filled", "modal-open", "tab-settings", etc.
     analysis: ScreenAnalysis;
     screenshotRef: string;
-    screenshotLabel: string; // e.g., "hero", "invite-form-filled"
-    codeContext?: Record<string, unknown> | null;
   }[];
-  prdSummary?: {
-    product_purpose?: string;
-    main_features?: { name: string; description: string }[];
-    user_roles?: { role: string; description: string }[];
-  } | null;
+  otherFeatures: { name: string; slug: string }[];
+  prdSummary?: PRDSummary | null;
+  codeContext?: Record<string, unknown> | null;
 }): string {
-  const analysesJson = opts.screenAnalyses.map((sa) => ({
-    navigation_path: sa.navPath,
-    screenshot_ref: sa.screenshotRef,
-    screenshot_label: sa.screenshotLabel,
-    page_title: sa.analysis.page_title,
-    purpose: sa.analysis.purpose,
-    overview: sa.analysis.overview_paragraph,
-    fields: sa.analysis.fields,
-    actions: sa.analysis.actions,
-    permissions: sa.analysis.permissions,
-    tips: sa.analysis.tips,
-    code_context: sa.codeContext ?? null,
-  }));
+  return `You are a senior technical writer creating end-user documentation for a SaaS application. You write like Stripe's docs team — clear, concise, scenario-driven, and respectful of the reader's intelligence.
 
-  const prdBlock = opts.prdSummary
-    ? `\nPRODUCT CONTEXT (from PRD — use for business meaning in the intro):\n${JSON.stringify(opts.prdSummary, null, 2)}`
-    : "";
+You are documenting the "${opts.featureName}" feature.
 
-  return `You are writing a single markdown documentation page for the "${opts.featureName}" feature.
+SCREENSHOTS PROVIDED:
+${opts.screenAnalyses.map((s, i) => `${i + 1}. [${s.screenshotRef}] — ${s.screenshotType}: ${s.analysis.purpose || s.analysis.page_title || "Page screenshot"}`).join("\n")}
 
-FEATURE DESCRIPTION: ${opts.featureDescription}
-${prdBlock}
+OTHER FEATURES IN THIS APP (for cross-references):
+${opts.otherFeatures.map((f) => `- ${f.name} (link: ./${f.slug}.md)`).join("\n")}
 
-SCREEN ANALYSES (each represents one screenshot of this feature's page):
-${JSON.stringify(analysesJson, null, 2)}
+${opts.prdSummary ? `PRODUCT CONTEXT: ${opts.prdSummary.product_purpose}` : ""}
+${opts.codeContext ? `CODE CONTEXT: ${JSON.stringify(opts.codeContext)}` : ""}
 
-Return a JSON object with this exact schema:
+SCREEN DATA:
+${JSON.stringify(
+    opts.screenAnalyses.map((sa) => ({
+      screenshot_ref: sa.screenshotRef,
+      screenshot_type: sa.screenshotType,
+      page_title: sa.analysis.page_title,
+      purpose: sa.analysis.purpose,
+      fields: sa.analysis.fields,
+      actions: sa.analysis.actions,
+      permissions: sa.analysis.permissions,
+      tips: sa.analysis.tips,
+    })),
+    null,
+    2,
+  )}
+
+WRITING RULES — follow these exactly:
+
+1. SCENARIO-BASED: Write as if guiding a real person through a real task. Use specific examples. "To add your marketing lead, enter their work email — for example, jane@yourcompany.com" NOT "Enter an email in the Email field."
+
+2. SKIP THE OBVIOUS: Never document self-explanatory actions. Don't tell users what buttons do when the label is clear. Don't explain text fields. Don't document sign-in steps. Only document things users might miss, might not understand, or where actions have important consequences.
+
+3. EXPLAIN OUTCOMES: After every significant action, add one sentence about what happens next. "They'll receive an email invitation within a few minutes and appear in your team list once they accept."
+
+4. CONNECT FEATURES: Where relevant, mention how this feature relates to others. "All changes here are recorded in the Activity Log." Only add cross-references that are genuinely helpful.
+
+5. USE SCREENSHOTS WISELY: Place each screenshot ref immediately after the steps it illustrates. Only if it shows something DIFFERENT from the previous screenshot. Never reference the same image twice.
+
+6. BUSINESS CONTEXT INTRO: Start with WHY this feature matters (2 sentences max). What problem does it solve? NOT "This page lets you manage X." YES "Keep your team organized by controlling who has access and what they can do."
+
+7. HELPFUL PERMISSION NOTES: When mentioning permissions, tell the user what to DO if they lack access. "If you don't see the invite form, ask your team's Owner to send the invitation."
+
+8. NO FILLER: If an action group wouldn't help a new employee, don't include it. No "Customize Display" sections about dark mode toggles. No "Navigate to this page" sections — that's in the index. Fewer, better sections always win.
+
+TIPS RULES:
+- Maximum 2 tips per page
+- Each tip must be SPECIFIC to what you observed in the screenshots
+- Good tip: "Team member invitations expire after 7 days. If someone hasn't accepted, you'll need to resend from this page."
+- Good tip: "The Activity Log shows events in reverse order — your most recent actions appear first."
+- Bad tip: "Use a strong password with letters, numbers, and symbols." (generic, not app-specific)
+- Bad tip: "Contact your administrator if you need help." (useless)
+- If you can't write 2 genuinely useful, app-specific tips, write 0 tips. No filler.
+
+OUTCOME LINE:
+After each action group's steps, add an "outcome" field — one sentence describing what the user should see or what happens in the system after completing the steps. This should be SPECIFIC:
+- Good: "The invited member receives an email and appears in the team list above within a few minutes."
+- Good: "Your updated name appears immediately in the header and in other team members' activity feeds."
+- Bad: "Your changes are saved." (too vague)
+- Bad: "The action is completed." (says nothing)
+
+ADDITIONAL RULES:
+- Bold UI elements: **Save Changes**, **Email** field, **Member** role
+- One action per numbered step
+- Maximum 5 numbered steps per action group (if more steps needed, break into sub-groups)
+- Step detail (optional sub-text) must be ONE sentence max
+- Field table: only include fields that exist ON THIS PAGE with real validation info
+- No "Related" section — cross-references go inline in the text
+- BANNED phrases: "This page displays", "You'll see", "Here you can", "This is designed to", "As shown above", "As you can see"
+
+OUTPUT FORMAT (JSON):
 {
-  "title": "string — the feature name as page title, e.g. 'Team Management'",
-  "intro": "string — 2-3 sentences MAX. What this feature does and who uses it. Reference business purpose from PRD if available.",
+  "title": "Feature Name (clean, no framework prefix)",
+  "intro": "2 sentences about WHY this feature matters",
+  "hero_screenshot_ref": "slug.png",
   "action_groups": [
     {
-      "heading": "string — action group name, e.g. 'Invite a Team Member' or 'Manage Roles'",
+      "heading": "Scenario-based heading (e.g., 'Add a Team Member')",
       "steps": [
-        {
-          "action": "string — ONE action. Bold UI elements with **double asterisks**. e.g. 'Click **Invite Member**.'",
-          "detail": "string or null — optional extra context (max 1 sentence)"
-        }
+        { "action": "Bold UI elements, specific scenario", "detail": "Optional one-sentence context or outcome" }
       ],
-      "screenshot_ref": "string or null — the screenshot_ref of a relevant screenshot for this action group"
+      "screenshot_ref": "slug-form-filled.png or null if no relevant screenshot",
+      "outcome": "One sentence: what happens after completing these steps"
     }
   ],
-  "permission_notes": ["string — e.g. 'Only **Owner** role users can invite members.' Include ONLY if permissions data exists."],
-  "fields": [
-    {
-      "label": "string — field label as seen in UI",
-      "type": "string — field type (text, email, dropdown, checkbox, etc.)",
-      "required": true/false,
-      "description": "string — include validation rules from code_context if available"
-    }
-  ]
+  "permission_notes": ["Helpful note with solution, not just restriction"],
+  "fields": [{ "label": "...", "type": "...", "required": true, "description": "..." }],
+  "tips": ["Max 2, genuinely non-obvious tips"]
 }
-
-CRITICAL RULES:
-- This page documents ONE feature (one sidebar/nav item). Do NOT mix in content from other features.
-- Intro: 2-3 sentences MAX. Reference WHY this feature matters using PRD context.
-- action_groups: Group related actions. E.g., for Team Management: "View Members", "Invite a Member", "Manage Roles".
-- Each step's "action" must be ONE action. Bold all UI element names: **Button**, **Field Name**, **Menu Item**.
-- Each step's "detail" field must be ONE sentence maximum or null.
-- fields: ONLY include fields that appear ON THIS FEATURE'S PAGE. Merge code_context validation/types with screen analysis.
-- permission_notes: ONLY include if permissions data exists in the screen analyses.
-- screenshot_ref in action_groups: Use the screenshot_ref from analyses that shows the relevant action. Use null if no matching screenshot.
-- BANNED phrases: "This page displays", "You'll see", "Here you can", "This is designed to", "As shown above", "As you can see"
-- Write for end-users, not developers.
-- If code_context has field validation rules, include them in the field descriptions.
 
 Return ONLY valid JSON. No markdown, no explanation, no backticks.`;
 }

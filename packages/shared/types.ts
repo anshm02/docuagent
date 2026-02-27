@@ -128,6 +128,7 @@ export interface FeaturePageContent {
       detail?: string;
     }[];
     screenshot_ref?: string;
+    outcome?: string;
   }[];
   permission_notes: string[];
   fields: {
@@ -137,6 +138,7 @@ export interface FeaturePageContent {
     description: string;
   }[];
   hero_screenshot_ref: string;
+  tips?: string[];
 }
 
 export interface MarkdownIndexContent {

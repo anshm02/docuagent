@@ -640,47 +640,428 @@ async function captureScreen(
 }
 
 // ---------------------------------------------------------------------------
-// Fill form fields with sample data (no submit)
+// Smart page exploration helpers
 // ---------------------------------------------------------------------------
 
-async function fillFormFields(
+async function hasPageChanged(page: Page, referenceBuffer: Buffer): Promise<boolean> {
+  const current = await takeScreenshot(page);
+  if (Math.abs(referenceBuffer.length - current.length) < 500) {
+    const refSlice = referenceBuffer.slice(0, 1000).toString("hex");
+    const curSlice = current.slice(0, 1000).toString("hex");
+    if (refSlice === curSlice) return false;
+  }
+  return true;
+}
+
+interface DetectedField {
+  type: string;
+  label: string;
+  name: string;
+  placeholder: string;
+}
+
+async function detectFormFields(page: Page): Promise<DetectedField[]> {
+  return page.evaluate(() => {
+    const d = (globalThis as any).document;
+    const fields: any[] = [];
+    const inputs = d.querySelectorAll(
+      'input:not([type="hidden"]):not([type="submit"]):not([type="button"]), textarea, select',
+    );
+    for (const el of Array.from(inputs) as any[]) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0 || el.disabled) continue;
+      let label = "";
+      if (el.id) {
+        const labelEl = d.querySelector(`label[for="${el.id}"]`);
+        if (labelEl) label = (labelEl.textContent ?? "").trim();
+      }
+      if (!label) {
+        const cl = el.closest("label");
+        if (cl) label = (cl.textContent ?? "").trim();
+      }
+      if (!label) label = el.placeholder || el.name || el.getAttribute("aria-label") || "";
+      fields.push({
+        type:
+          el.tagName === "TEXTAREA"
+            ? "textarea"
+            : el.tagName === "SELECT"
+              ? "select"
+              : el.type ?? "text",
+        label: label.substring(0, 50),
+        name: el.name ?? "",
+        placeholder: el.placeholder ?? "",
+      });
+    }
+    return fields;
+  });
+}
+
+function getSampleValue(
+  field: DetectedField,
+): { instruction: string } | null {
+  const label = field.label || field.name || field.placeholder;
+  if (!label) return null;
+  const lower = label.toLowerCase();
+  const type = field.type.toLowerCase();
+
+  if (type === "checkbox")
+    return { instruction: `Check the "${label}" checkbox` };
+  if (type === "radio")
+    return { instruction: `Select the first "${label}" radio option` };
+  if (type === "select" || type === "select-one")
+    return {
+      instruction: `Click the "${label}" dropdown and select the second option`,
+    };
+  // Skip password fields
+  if (type === "password") return null;
+
+  if (type === "email" || lower.includes("email")) {
+    return {
+      instruction: `Type 'sarah@company.com' into the ${label} field`,
+    };
+  }
+  if (lower.includes("phone") || lower.includes("tel") || type === "tel") {
+    return {
+      instruction: `Type '+1 (555) 123-4567' into the ${label} field`,
+    };
+  }
+  if (
+    lower.includes("name") ||
+    lower.includes("first") ||
+    lower.includes("last") ||
+    lower.includes("display")
+  ) {
+    return {
+      instruction: `Type 'Sarah Johnson' into the ${label} field`,
+    };
+  }
+  if (lower.includes("url") || lower.includes("website") || type === "url") {
+    return {
+      instruction: `Type 'https://example.com' into the ${label} field`,
+    };
+  }
+  if (type === "number") {
+    return { instruction: `Type '42' into the ${label} field` };
+  }
+  if (type === "date" || lower.includes("date")) {
+    return {
+      instruction: `Click the ${label} date picker and select tomorrow's date`,
+    };
+  }
+  if (type === "textarea") {
+    return {
+      instruction: `Type 'Review quarterly objectives and key results for Q4.' into the ${label} field`,
+    };
+  }
+  // Default text
+  return {
+    instruction: `Type 'Sample text for testing' into the ${label} field`,
+  };
+}
+
+const UNSAFE_BUTTON_WORDS = [
+  "delete",
+  "remove",
+  "send",
+  "invite",
+  "share",
+  "pay",
+  "cancel",
+  "deactivate",
+  "reset",
+];
+
+interface ExplorationResult {
+  screens: ScreenRecord[];
+  interactionsCompleted: number;
+}
+
+async function smartExploreFeature(
   stagehand: Stagehand,
   page: Page,
-  featureName: string,
-): Promise<boolean> {
-  try {
-    // Check if the page has visible form fields
-    const hasFields = await page.evaluate(() => {
-      const d = (globalThis as any).document;
-      const inputs = d.querySelectorAll(
-        'input[type="text"], input[type="email"], input[type="tel"], input[type="url"], input[type="number"], textarea, select'
-      );
-      // Filter to only visible inputs
-      return Array.from(inputs).some((el: any) => {
-        const rect = el.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0 && !el.disabled;
-      });
-    });
+  feature: Feature,
+  jobId: string,
+  codeContext: Record<string, unknown> | null,
+  heroBuffer: Buffer,
+  startOrderIndex: number,
+  maxActionScreenshots: number,
+): Promise<ExplorationResult> {
+  const screens: ScreenRecord[] = [];
+  let orderIndex = startOrderIndex;
+  let actionCount = 0;
+  let lastBuffer = heroBuffer;
+  const startTime = Date.now();
+  const TIME_BUDGET_MS = 60_000;
+  const MAX_ACTIONS = Math.min(maxActionScreenshots, 4);
 
-    if (!hasFields) {
-      console.log(`[crawl] No form fields found on ${featureName}`);
+  const isTimedOut = () => Date.now() - startTime > TIME_BUDGET_MS;
+  const canDoMore = () => actionCount < MAX_ACTIONS && !isTimedOut();
+
+  // Helper: capture action screenshot if page changed
+  async function captureAction(
+    label: string,
+    filename: string,
+    broadcastLabel: string,
+    screenType: ScreenType = "page",
+  ): Promise<boolean> {
+    if (!canDoMore()) return false;
+    if (!(await hasPageChanged(page, lastBuffer))) {
+      console.log(
+        `[crawl] No visual change after ${label}, skipping screenshot`,
+      );
       return false;
     }
-
-    console.log(`[crawl] Filling form fields on ${featureName}...`);
-
-    // Use Stagehand to fill fields with realistic sample data
-    await stagehand.act(
-      `Fill in all visible form fields with realistic sample data. For name fields use "Jane Smith". For email fields use "jane@acme.com". For phone fields use "555-0123". For URL fields use "https://example.com". For text areas, type a brief realistic sentence. Select any visible radio buttons or checkboxes. Do NOT click any submit, save, or delete buttons.`,
-      { timeout: 20_000 },
-    );
-    await page.waitForTimeout(500);
-
-    return true;
-  } catch (err) {
-    console.error(`[crawl] Form fill failed on ${featureName}:`, err);
+    const result = await captureScreen(page, jobId, {
+      featureId: feature.id,
+      featureSlug: feature.slug,
+      screenshotLabel: label,
+      navPath: `${feature.name} (${label})`,
+      screenType,
+      codeContext,
+      orderIndex,
+      broadcastLabel: `${feature.name} — ${broadcastLabel}`,
+      descriptiveFilename: filename,
+      skipDuplicateCheck: true,
+    });
+    if (result) {
+      screens.push(result.record);
+      orderIndex++;
+      actionCount++;
+      lastBuffer = await takeScreenshot(page);
+      return true;
+    }
     return false;
   }
+
+  // ---- Priority 1: Form fields ----
+  const fields = await detectFormFields(page);
+  if (fields.length > 0 && canDoMore()) {
+    console.log(
+      `[crawl] Found ${fields.length} form fields on ${feature.name}, filling...`,
+    );
+    let filledCount = 0;
+    const maxFields = 6; // Limit to stay within time budget
+    for (const field of fields.slice(0, maxFields)) {
+      if (isTimedOut()) break;
+      const sample = getSampleValue(field);
+      if (!sample) continue;
+      try {
+        await stagehand.act(sample.instruction, { timeout: 10_000 });
+        filledCount++;
+        await page.waitForTimeout(300);
+      } catch {
+        // field fill failed, continue to next
+      }
+    }
+    if (filledCount > 0) {
+      console.log(
+        `[crawl] Filled ${filledCount}/${fields.length} fields on ${feature.name}`,
+      );
+      await page.waitForTimeout(500);
+      await captureAction(
+        "form-filled",
+        `${feature.slug}-form-filled.png`,
+        "form filled",
+      );
+
+      // ---- Part D: Try safe submit ----
+      if (canDoMore()) {
+        try {
+          const submitButtons = await stagehand.observe(
+            `Find any submit/save/create button on this page. Only report buttons labeled: Save, Save Changes, Update, Create, Add, Apply, Confirm, Submit. Do NOT report buttons labeled: Delete, Remove, Send, Invite, Share, Pay, Cancel Account, Deactivate, Reset. For each button, tell me its exact label text.`,
+            { timeout: 10_000 },
+          );
+          if (submitButtons.length > 0) {
+            const btnLabel =
+              submitButtons[0].description?.trim() ?? "Submit";
+            const lower = btnLabel.toLowerCase();
+            const isUnsafe = UNSAFE_BUTTON_WORDS.some((u) =>
+              lower.includes(u),
+            );
+            if (!isUnsafe) {
+              console.log(
+                `[crawl] Clicking safe submit: "${btnLabel}"`,
+              );
+              await stagehand.act(
+                `Click the "${btnLabel}" button`,
+                { timeout: 10_000 },
+              );
+              await waitForSettle(page);
+              await page.waitForTimeout(2000);
+              await captureAction(
+                "result",
+                `${feature.slug}-result.png`,
+                "after submit",
+              );
+            }
+          }
+        } catch {
+          // submit detection failed, continue
+        }
+      }
+    }
+  }
+
+  // ---- Priority 2: Modal triggers, tabs, accordions ----
+  if (canDoMore()) {
+    try {
+      const elements = await stagehand.observe(
+        `List interactive elements in the MAIN CONTENT AREA that would reveal new content when clicked. Look for: buttons labeled "Add", "Create", "New", "Edit" (these open modals/dialogs); tab buttons; accordion headers; toggle sections. Ignore sidebar, header nav, form fields, submit buttons. For each element, report its type (modal_trigger, tab, accordion) and label text.`,
+        { timeout: 15_000 },
+      );
+
+      for (const el of elements) {
+        if (!canDoMore()) break;
+        const desc = (el.description ?? "").toLowerCase();
+        const label = el.description?.trim() ?? "";
+
+        // Modal triggers
+        if (
+          desc.includes("modal") ||
+          desc.includes("dialog") ||
+          desc.includes("add") ||
+          desc.includes("create") ||
+          desc.includes("new") ||
+          (desc.includes("edit") && !desc.includes("tab"))
+        ) {
+          if (UNSAFE_BUTTON_WORDS.some((u) => desc.includes(u))) continue;
+
+          try {
+            console.log(
+              `[crawl] Opening modal: "${label}" on ${feature.name}`,
+            );
+            await stagehand.act(`Click the "${label}" button`, {
+              timeout: 10_000,
+            });
+            await waitForSettle(page);
+            await page.waitForTimeout(1000);
+
+            const captured = await captureAction(
+              "modal-open",
+              `${feature.slug}-modal-open.png`,
+              "modal opened",
+              "modal",
+            );
+
+            // Close modal
+            if (captured) {
+              try {
+                await stagehand.act(
+                  "Close this dialog or modal by clicking the X button or close button",
+                  { timeout: 5_000 },
+                );
+              } catch {
+                try {
+                  await stagehand.act(
+                    "Press the Escape key to close the modal",
+                    { timeout: 5_000 },
+                  );
+                } catch {
+                  /* ignore */
+                }
+              }
+              await page.waitForTimeout(500);
+              lastBuffer = await takeScreenshot(page);
+            }
+          } catch {
+            continue;
+          }
+        }
+        // Tabs
+        else if (desc.includes("tab")) {
+          try {
+            const tabSlug = label
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, "-")
+              .replace(/^-+|-+$/g, "")
+              .substring(0, 20);
+            console.log(
+              `[crawl] Clicking tab: "${label}" on ${feature.name}`,
+            );
+            await stagehand.act(`Click the "${label}" tab`, {
+              timeout: 10_000,
+            });
+            await waitForSettle(page);
+            await captureAction(
+              `tab-${tabSlug}`,
+              `${feature.slug}-tab-${tabSlug}.png`,
+              `tab: ${label}`,
+              "tab",
+            );
+          } catch {
+            continue;
+          }
+        }
+        // Accordions / collapsibles
+        else if (
+          desc.includes("accordion") ||
+          desc.includes("expand") ||
+          desc.includes("collapse") ||
+          desc.includes("collapsible")
+        ) {
+          try {
+            console.log(
+              `[crawl] Expanding: "${label}" on ${feature.name}`,
+            );
+            await stagehand.act(`Click to expand "${label}"`, {
+              timeout: 10_000,
+            });
+            await waitForSettle(page);
+            await captureAction(
+              "expanded",
+              `${feature.slug}-expanded.png`,
+              "expanded section",
+            );
+          } catch {
+            continue;
+          }
+        }
+      }
+    } catch {
+      // observe failed, continue
+    }
+  }
+
+  // ---- Scroll check for below-fold content ----
+  if (canDoMore()) {
+    try {
+      const dims = await page.evaluate(() => ({
+        scrollHeight: (globalThis as any).document.documentElement
+          .scrollHeight,
+        viewportHeight: (globalThis as any).window.innerHeight,
+      }));
+      if (dims.scrollHeight > dims.viewportHeight * 1.5) {
+        console.log(
+          `[crawl] Below-fold content detected (${dims.scrollHeight}px), scrolling...`,
+        );
+        await page.evaluate(() =>
+          (globalThis as any).window.scrollTo(
+            0,
+            (globalThis as any).document.documentElement.scrollHeight / 2,
+          ),
+        );
+        await waitForSettle(page);
+        await captureAction(
+          "scrolled",
+          `${feature.slug}-scrolled.png`,
+          "below-fold content",
+        );
+        // Scroll back to top
+        await page.evaluate(() =>
+          (globalThis as any).window.scrollTo(0, 0),
+        );
+      }
+    } catch {
+      /* ignore scroll errors */
+    }
+  }
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.log(
+    `[crawl] Feature "${feature.name}" exploration: ${actionCount} action screenshots in ${elapsed}s`,
+  );
+
+  return { screens, interactionsCompleted: actionCount };
 }
 
 // ---------------------------------------------------------------------------
@@ -867,28 +1248,22 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
           orderIndex++;
         }
 
-        // --- ACTION screenshot: fill forms with sample data ---
-        if (feature.hasForm && screens.length < maxScreens) {
-          await broadcastProgress(config.jobId, "info", `Capturing ${feature.name} — filling form`);
-          const filled = await fillFormFields(stagehand, page, feature.name);
-          if (filled) {
-            const actionResult = await captureScreen(page, config.jobId, {
-              featureId: feature.id,
-              featureSlug: feature.slug,
-              screenshotLabel: "form-filled",
-              navPath: `${feature.name} (form filled)`,
-              screenType: "page",
-              codeContext,
-              orderIndex,
-              broadcastLabel: `${feature.name} — form filled`,
-              descriptiveFilename: `${feature.slug}-filled.png`,
-              skipDuplicateCheck: true,
-            });
-            if (actionResult) {
-              screens.push(actionResult.record);
-              orderIndex++;
-            }
-          }
+        // --- SMART EXPLORATION: observe + interact + screenshot changes ---
+        if (screens.length < maxScreens) {
+          const heroBuffer = await takeScreenshot(page);
+          await broadcastProgress(config.jobId, "info", `Exploring ${feature.name}...`);
+          const exploration = await smartExploreFeature(
+            stagehand,
+            page,
+            feature,
+            config.jobId,
+            codeContext,
+            heroBuffer,
+            orderIndex,
+            maxScreens - screens.length,
+          );
+          screens.push(...exploration.screens);
+          orderIndex += exploration.screens.length;
         }
 
         console.log(`[crawl] Feature "${feature.name}" complete`);
