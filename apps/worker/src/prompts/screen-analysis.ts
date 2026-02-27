@@ -5,9 +5,9 @@ export function screenAnalysisPrompt(opts: {
   domHtml: string;
   codeContext: Record<string, unknown> | null;
   prdSummary: PRDSummary | null;
-  journeyTitle: string;
-  journeyDescription: string;
-  stepNum: number;
+  featureName: string;
+  featureDescription: string;
+  screenshotLabel: string;
   navPath: string;
 }): string {
   const codeSection = opts.codeContext
@@ -27,7 +27,8 @@ ${opts.domHtml}
 ${codeSection}
 ${prdSection}
 
-JOURNEY CONTEXT: This screen is step ${opts.stepNum} of "${opts.journeyTitle}" — ${opts.journeyDescription}
+FEATURE CONTEXT: This is the "${opts.featureName}" feature — ${opts.featureDescription}
+SCREENSHOT TYPE: ${opts.screenshotLabel}
 NAVIGATION PATH: ${opts.navPath}
 
 Return a JSON object with this exact schema:

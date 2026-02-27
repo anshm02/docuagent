@@ -8,19 +8,14 @@ import {
   cleanDom,
 } from "../lib/stagehand.js";
 import type {
-  Journey,
-  JourneyStep,
+  Feature,
   CrawlPlan,
   RouteInfo,
-  Screen,
   ScreenType,
 } from "@docuagent/shared";
 import {
   MAX_SCREENS_DEFAULT,
-  SCREENSHOT_WIDTH,
-  SCREENSHOT_HEIGHT,
   PAGE_TIMEOUT_MS,
-  MODAL_DELAY_MS,
 } from "@docuagent/shared";
 import crypto from "crypto";
 
@@ -33,7 +28,7 @@ export interface CrawlConfig {
   appUrl: string;
   loginUrl?: string;
   credentials?: { username: string; password: string };
-  journeys: Journey[];
+  features: Feature[];
   crawlPlan: CrawlPlan;
   maxScreens?: number;
 }
@@ -53,16 +48,16 @@ export interface ScreenRecord {
   domHtml: string | null;
   codeContext: Record<string, unknown> | null;
   screenType: ScreenType;
-  journeyId: string | null;
-  journeyStep: number | null;
+  featureId: string | null;
+  featureSlug: string | null;
+  screenshotLabel: string; // e.g., "hero", "invite-form-filled"
   createdEntityId: string | null;
   status: "crawled";
   orderIndex: number;
 }
 
 export interface CrawlError {
-  journeyId: string;
-  stepIndex: number;
+  featureId: string;
   action: string;
   error: string;
 }
@@ -143,7 +138,7 @@ async function isCloudflareBlock(page: Page): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
-// Page health check — returns reason to skip or null if OK
+// Page health check
 // ---------------------------------------------------------------------------
 
 async function checkPageHealth(page: Page): Promise<string | null> {
@@ -266,7 +261,7 @@ export async function findLoginPage(
 
   if (hasCredentials) {
     console.error("[crawl] Could not find login page. Credentials provided but no login page found.");
-    return null; // Will cause error to be reported
+    return null;
   }
 
   console.log("[crawl] No login page found, proceeding without authentication");
@@ -274,7 +269,7 @@ export async function findLoginPage(
 }
 
 // ---------------------------------------------------------------------------
-// Detect app name from page (2E)
+// Detect app name from page (CHANGE 5 — fixed extraction)
 // ---------------------------------------------------------------------------
 
 export async function detectAppName(
@@ -291,14 +286,34 @@ export async function detectAppName(
       { timeout: 10_000 },
     );
     if (observations.length > 0) {
-      appName = observations[0].description?.trim() ?? "";
+      let raw = observations[0].description?.trim() ?? "";
+
+      // CHANGE 5: Extract just the name from Stagehand's description
+      // If the response contains quoted text like 'ACME' or "ACME", extract it
+      const quotedMatch = raw.match(/['"]([^'"]+)['"]/);
+      if (quotedMatch) {
+        raw = quotedMatch[1];
+      }
+
+      // If result is longer than 30 chars, it's a description not a name
+      if (raw.length <= 30) {
+        appName = raw;
+      }
     }
   } catch {
     // observe failed, try fallback
   }
 
-  // 2. If generic or empty, try document.title
+  // 2. If still empty or generic, try product description first
   const genericNames = ["home", "dashboard", "next.js", "app", ""];
+  if (genericNames.includes(appName.toLowerCase()) && productDescription) {
+    const match = productDescription.match(/^([A-Z][A-Za-z]+(?:\s[A-Z][A-Za-z]+)*)/);
+    if (match) {
+      appName = match[1];
+    }
+  }
+
+  // 3. If still generic, try document.title
   if (genericNames.includes(appName.toLowerCase())) {
     try {
       const title = await page.evaluate(() => {
@@ -306,19 +321,10 @@ export async function detectAppName(
       });
       // Clean up title: remove " - Dashboard", " | Home" etc.
       appName = title
-        .replace(/\s*[-|–—]\s*(dashboard|home|admin|app|settings).*$/i, "")
+        .replace(/\s*[-|–—]\s*(dashboard|home|admin|app|settings|next\.js).*$/i, "")
         .trim();
     } catch {
       // fallback below
-    }
-  }
-
-  // 3. If still generic, use product description
-  if (genericNames.includes(appName.toLowerCase()) && productDescription) {
-    // Extract first capitalized word/phrase that looks like a name
-    const match = productDescription.match(/^([A-Z][A-Za-z]+(?:\s[A-Z][A-Za-z]+)*)/);
-    if (match) {
-      appName = match[1];
     }
   }
 
@@ -327,9 +333,15 @@ export async function detectAppName(
     .replace(/\s*[-|–—]\s*(Dashboard|Home|Admin|App|Settings|Next\.js)$/i, "")
     .trim();
 
-  // 5. Final fallback
+  // 5. Final fallback — URL hostname
   if (!appName || genericNames.includes(appName.toLowerCase())) {
-    appName = "Application";
+    try {
+      const hostname = new URL(page.url()).hostname;
+      appName = hostname.replace(/^www\./, "").split(".")[0];
+      appName = appName.charAt(0).toUpperCase() + appName.slice(1);
+    } catch {
+      appName = "Application";
+    }
   }
 
   console.log(`[crawl] Detected app name: "${appName}"`);
@@ -356,8 +368,9 @@ async function storeScreen(
       dom_html: record.domHtml,
       code_context: record.codeContext,
       screen_type: record.screenType,
-      journey_id: record.journeyId,
-      journey_step: record.journeyStep,
+      // DB columns still named journey_id/journey_step for backward compat
+      journey_id: record.featureId,
+      journey_step: record.featureSlug ? 0 : null,
       created_entity_id: record.createdEntityId,
       status: "crawled",
       order_index: record.orderIndex,
@@ -446,14 +459,12 @@ async function authenticate(
         timeout: 15_000,
       });
 
-      // Wait for navigation after login
       await waitForSettle(page);
       await page.waitForTimeout(3000);
 
       const currentUrl = page.url();
       console.log(`[crawl] Post-login URL: ${currentUrl}`);
 
-      // Check if we navigated away from login page
       const loginPatterns = ["/login", "/sign-in", "/signin", "/sign-up", "/signup", "/auth"];
       const stillOnLogin = loginPatterns.some((p) => currentUrl.toLowerCase().includes(p));
 
@@ -471,7 +482,7 @@ async function authenticate(
 }
 
 // ---------------------------------------------------------------------------
-// Session expiry detection (2B — improved)
+// Session expiry detection
 // ---------------------------------------------------------------------------
 
 function isRedirectedToLogin(url: string, loginUrl?: string): boolean {
@@ -485,8 +496,6 @@ async function hasActualLoginForm(page: Page): Promise<boolean> {
       const d = (globalThis as any).document;
       const passwordInputs = d.querySelectorAll('input[type="password"]');
       const hasNavOrSidebar = d.querySelectorAll("nav, aside, .sidebar, [role='navigation']").length > 0;
-      // If there's a password input but also rich nav/sidebar content, this is NOT a login page
-      // (it might be a settings page with password change)
       if (passwordInputs.length === 0) return false;
       const bodyText = (d.body as any)?.innerText ?? "";
       const hasDashboardContent = bodyText.length > 2000 && hasNavOrSidebar;
@@ -516,7 +525,6 @@ export async function discoverNavigation(
 
     for (const action of actions) {
       const desc = action.description ?? "";
-      // Try to extract URL from the selector or description
       const hrefMatch = desc.match(/href=["']([^"']+)["']/);
       const path = hrefMatch?.[1] ?? `/${desc.toLowerCase().replace(/\s+/g, "-")}`;
 
@@ -550,13 +558,16 @@ async function captureScreen(
   page: Page,
   jobId: string,
   opts: {
-    journeyId: string | null;
-    journeyStep: number | null;
+    featureId: string | null;
+    featureSlug: string | null;
+    screenshotLabel: string; // e.g., "hero", "invite-form-filled"
     navPath: string | null;
     screenType: ScreenType;
     codeContext: Record<string, unknown> | null;
     orderIndex: number;
-    label: string;
+    broadcastLabel: string;
+    descriptiveFilename: string; // e.g., "team-management.png"
+    skipDuplicateCheck?: boolean; // for action screenshots on same page
   },
 ): Promise<{ record: ScreenRecord; screenshotUrl: string | null } | null> {
   const url = page.url();
@@ -568,27 +579,30 @@ async function captureScreen(
     return null;
   }
 
-  // Check URL-based duplicate
-  if (isUrlAlreadyCaptured(url)) {
+  // Check URL-based duplicate (skip for action screenshots on same page)
+  if (!opts.skipDuplicateCheck && isUrlAlreadyCaptured(url)) {
     console.log(`[crawl] Skipping already-captured URL: ${url}`);
     return null;
   }
 
   const dom = await cleanDom(page);
 
-  if (isDuplicate(dom)) {
+  // Skip DOM duplicate check for action screenshots (same page, different state)
+  if (!opts.skipDuplicateCheck && isDuplicate(dom)) {
     console.log(`[crawl] Skipping duplicate DOM at ${url}`);
     return null;
   }
 
-  // Mark URL as captured
-  markUrlCaptured(url);
+  // Mark URL as captured (only for hero screenshots)
+  if (!opts.skipDuplicateCheck) {
+    markUrlCaptured(url);
+  }
 
   const screenshotBuffer = await takeScreenshot(page);
-  const filename = `screen_${opts.orderIndex}_${Date.now()}.png`;
+  const filename = opts.descriptiveFilename;
   let screenshotUrl = await uploadScreenshot(jobId, screenshotBuffer, filename);
 
-  // Retry upload once if it failed (2D)
+  // Retry upload once if it failed
   if (!screenshotUrl) {
     console.log(`[crawl] Retrying screenshot upload after 3s delay...`);
     await page.waitForTimeout(3000);
@@ -604,8 +618,9 @@ async function captureScreen(
     domHtml: dom,
     codeContext: opts.codeContext,
     screenType: opts.screenType,
-    journeyId: opts.journeyId,
-    journeyStep: opts.journeyStep,
+    featureId: opts.featureId,
+    featureSlug: opts.featureSlug,
+    screenshotLabel: opts.screenshotLabel,
     createdEntityId: null,
     status: "crawled",
     orderIndex: opts.orderIndex,
@@ -617,7 +632,7 @@ async function captureScreen(
   await broadcastProgress(
     jobId,
     "screenshot",
-    `Captured: ${opts.label} (${url})`,
+    `Captured: ${opts.broadcastLabel}`,
     screenshotUrl ?? undefined,
   );
 
@@ -625,243 +640,51 @@ async function captureScreen(
 }
 
 // ---------------------------------------------------------------------------
-// Journey execution
+// Fill form fields with sample data (no submit)
 // ---------------------------------------------------------------------------
 
-async function executeStep(
+async function fillFormFields(
   stagehand: Stagehand,
   page: Page,
-  step: JourneyStep,
-  journeyTitle: string,
-  appUrl: string,
-): Promise<void> {
-  // Navigate to the target route
-  if (step.target_route && step.target_route !== "use_navigation") {
-    const fullUrl = step.target_route.startsWith("http")
-      ? step.target_route
-      : `${appUrl.replace(/\/$/, "")}${step.target_route}`;
-
-    try {
-      await page.goto(fullUrl, {
-        waitUntil: "networkidle",
-        timeoutMs: PAGE_TIMEOUT_MS, // 30s
-      });
-    } catch {
-      console.log(`[crawl] Direct navigation timeout for ${fullUrl}, trying stagehand act`);
-      await stagehand.act(step.action, { timeout: 15_000 }); // 15s for act
-    }
-  } else {
-    // Use stagehand to navigate (15s timeout)
-    await stagehand.act(step.action, { timeout: 15_000 });
-  }
-
-  await waitForSettle(page);
-}
-
-async function handleInteraction(
-  stagehand: Stagehand,
-  page: Page,
-  step: JourneyStep,
-): Promise<string | null> {
-  if (!step.interaction) return null;
-
-  let createdEntityId: string | null = null;
-
+  featureName: string,
+): Promise<boolean> {
   try {
-    await stagehand.act(step.interaction, { timeout: 15_000 });
-    await waitForSettle(page);
+    // Check if the page has visible form fields
+    const hasFields = await page.evaluate(() => {
+      const d = (globalThis as any).document;
+      const inputs = d.querySelectorAll(
+        'input[type="text"], input[type="email"], input[type="tel"], input[type="url"], input[type="number"], textarea, select'
+      );
+      // Filter to only visible inputs
+      return Array.from(inputs).some((el: any) => {
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && !el.disabled;
+      });
+    });
 
-    // If this step creates data, try to extract the entity ID
-    if (step.creates_data) {
-      try {
-        const currentUrl = page.url();
-        // Try to extract ID from URL (e.g., /projects/123)
-        const idMatch = currentUrl.match(/\/([a-f0-9-]+|[0-9]+)(?:[/?#]|$)/);
-        if (idMatch) {
-          createdEntityId = idMatch[1];
-        }
-      } catch {
-        // non-critical
-      }
+    if (!hasFields) {
+      console.log(`[crawl] No form fields found on ${featureName}`);
+      return false;
     }
+
+    console.log(`[crawl] Filling form fields on ${featureName}...`);
+
+    // Use Stagehand to fill fields with realistic sample data
+    await stagehand.act(
+      `Fill in all visible form fields with realistic sample data. For name fields use "Jane Smith". For email fields use "jane@acme.com". For phone fields use "555-0123". For URL fields use "https://example.com". For text areas, type a brief realistic sentence. Select any visible radio buttons or checkboxes. Do NOT click any submit, save, or delete buttons.`,
+      { timeout: 20_000 },
+    );
+    await page.waitForTimeout(500);
+
+    return true;
   } catch (err) {
-    console.error(`[crawl] Interaction failed: ${step.interaction}`, err);
+    console.error(`[crawl] Form fill failed on ${featureName}:`, err);
+    return false;
   }
-
-  return createdEntityId;
 }
 
 // ---------------------------------------------------------------------------
-// Modal handling
-// ---------------------------------------------------------------------------
-
-async function handleModals(
-  stagehand: Stagehand,
-  page: Page,
-  captures: string[],
-  jobId: string,
-  journeyId: string,
-  orderIndex: number,
-): Promise<{ records: ScreenRecord[]; nextOrderIndex: number }> {
-  const records: ScreenRecord[] = [];
-  let idx = orderIndex;
-
-  const modalCaptures = captures.filter((c) => c.startsWith("modal:"));
-  for (const capture of modalCaptures) {
-    const modalName = capture.replace("modal:", "");
-    try {
-      console.log(`[crawl] Opening modal: ${modalName}`);
-      await stagehand.act(`Click the button or link that opens the ${modalName} modal or dialog`, {
-        timeout: 15_000,
-      });
-      await page.waitForTimeout(MODAL_DELAY_MS);
-
-      const result = await captureScreen(page, jobId, {
-        journeyId,
-        journeyStep: idx,
-        navPath: `Modal: ${modalName}`,
-        screenType: "modal",
-        codeContext: null,
-        orderIndex: idx,
-        label: `Modal: ${modalName}`,
-      });
-      if (result) {
-        records.push(result.record);
-        idx++;
-      }
-
-      // Close the modal
-      try {
-        await stagehand.act("Close the modal or dialog by clicking the close button or X", {
-          timeout: 10_000,
-        });
-        await page.waitForTimeout(500);
-      } catch {
-        // Try escape key
-        await page.keyPress("Escape");
-        await page.waitForTimeout(500);
-      }
-    } catch (err) {
-      console.error(`[crawl] Modal "${modalName}" failed:`, err);
-    }
-  }
-
-  return { records, nextOrderIndex: idx };
-}
-
-// ---------------------------------------------------------------------------
-// Tab handling
-// ---------------------------------------------------------------------------
-
-async function handleTabs(
-  stagehand: Stagehand,
-  page: Page,
-  jobId: string,
-  journeyId: string,
-  orderIndex: number,
-): Promise<{ records: ScreenRecord[]; nextOrderIndex: number }> {
-  const records: ScreenRecord[] = [];
-  let idx = orderIndex;
-
-  try {
-    const tabs = await stagehand.observe(
-      "Find all tab elements (role=tab or elements styled as tabs) on the page",
-    );
-
-    if (tabs.length > 1) {
-      console.log(`[crawl] Found ${tabs.length} tabs, clicking each...`);
-      for (let i = 1; i < tabs.length && i < 6; i++) {
-        try {
-          const tab = tabs[i];
-          await stagehand.act(`Click the tab labeled "${tab.description}"`, {
-            timeout: 10_000,
-          });
-          await page.waitForTimeout(800);
-
-          const result = await captureScreen(page, jobId, {
-            journeyId,
-            journeyStep: idx,
-            navPath: `Tab: ${tab.description}`,
-            screenType: "tab",
-            codeContext: null,
-            orderIndex: idx,
-            label: `Tab: ${tab.description}`,
-          });
-          if (result) {
-            records.push(result.record);
-            idx++;
-          }
-        } catch (err) {
-          console.error(`[crawl] Tab click failed:`, err);
-        }
-      }
-    }
-  } catch {
-    // No tabs found — ok
-  }
-
-  return { records, nextOrderIndex: idx };
-}
-
-// ---------------------------------------------------------------------------
-// Dropdown handling
-// ---------------------------------------------------------------------------
-
-async function handleDropdowns(
-  stagehand: Stagehand,
-  page: Page,
-  jobId: string,
-  journeyId: string,
-  orderIndex: number,
-): Promise<{ records: ScreenRecord[]; nextOrderIndex: number }> {
-  const records: ScreenRecord[] = [];
-  let idx = orderIndex;
-
-  try {
-    const dropdowns = await stagehand.observe(
-      "Find all dropdown or select elements on the page that can be expanded",
-    );
-
-    if (dropdowns.length > 0) {
-      // Only expand first 3 dropdowns to avoid noise
-      for (let i = 0; i < Math.min(dropdowns.length, 3); i++) {
-        try {
-          await stagehand.act(`Click the dropdown "${dropdowns[i].description}" to expand it`, {
-            timeout: 10_000,
-          });
-          await page.waitForTimeout(500);
-
-          const result = await captureScreen(page, jobId, {
-            journeyId,
-            journeyStep: idx,
-            navPath: `Dropdown: ${dropdowns[i].description}`,
-            screenType: "page",
-            codeContext: null,
-            orderIndex: idx,
-            label: `Dropdown: ${dropdowns[i].description}`,
-          });
-          if (result) {
-            records.push(result.record);
-            idx++;
-          }
-
-          // Close dropdown
-          await page.keyPress("Escape");
-          await page.waitForTimeout(300);
-        } catch {
-          // Skip failed dropdowns
-        }
-      }
-    }
-  } catch {
-    // No dropdowns found — ok
-  }
-
-  return { records, nextOrderIndex: idx };
-}
-
-// ---------------------------------------------------------------------------
-// Main crawl engine
+// Main crawl engine — FEATURE-BASED
 // ---------------------------------------------------------------------------
 
 export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
@@ -892,8 +715,7 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
       );
       if (!loggedIn) {
         errors.push({
-          journeyId: "auth",
-          stepIndex: 0,
+          featureId: "auth",
           action: "login",
           error: "Authentication failed after 2 attempts",
         });
@@ -902,20 +724,19 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
       }
       await broadcastProgress(config.jobId, "info", "Login successful!");
     } else if (!config.loginUrl && config.credentials) {
-      // Auto-detect login page (2A)
       const detectedLogin = await findLoginPage(stagehand, page, config.appUrl, true);
       if (detectedLogin) {
         await broadcastProgress(config.jobId, "info", `Auto-detected login page: ${detectedLogin}`);
         const loggedIn = await authenticate(stagehand, page, detectedLogin, config.credentials);
         if (!loggedIn) {
-          errors.push({ journeyId: "auth", stepIndex: 0, action: "login", error: "Auto-detected login failed" });
+          errors.push({ featureId: "auth", action: "login", error: "Auto-detected login failed" });
           await broadcastProgress(config.jobId, "error", "Login failed — could not find login page. Please provide the login URL.");
           return { screens, errors, totalDurationMs: Date.now() - startTime };
         }
         await broadcastProgress(config.jobId, "info", "Login successful!");
       } else {
         await broadcastProgress(config.jobId, "error", "Could not find login page. Please provide the login URL.");
-        errors.push({ journeyId: "auth", stepIndex: 0, action: "find-login", error: "Could not find login page" });
+        errors.push({ featureId: "auth", action: "find-login", error: "Could not find login page" });
         return { screens, errors, totalDurationMs: Date.now() - startTime };
       }
     } else {
@@ -927,238 +748,160 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
       await waitForSettle(page);
     }
 
-    // ----- Nav discovery fallback -----
-    let journeys = config.journeys;
-    if (!journeys || journeys.length === 0) {
-      console.log("[crawl] No journeys provided, using nav discovery fallback");
-      const discoveredRoutes = await discoverNavigation(stagehand, page);
+    // ----- Feature crawl -----
+    const { features } = config;
 
-      // Create a simple journey from discovered routes
-      journeys = [{
-        id: "discovery",
-        title: "Application Navigation",
-        description: "Auto-discovered navigation paths",
-        priority: 1,
-        steps: discoveredRoutes.map((route) => ({
-          action: `Navigate to ${route.path}`,
-          target_route: route.path,
-          captures: ["page"],
-        })),
-      }];
+    if (!features || features.length === 0) {
+      console.log("[crawl] No features to crawl");
+      return { screens, errors, totalDurationMs: Date.now() - startTime };
     }
 
-    // ----- Journey execution -----
-    const sortedJourneys = [...journeys].sort((a, b) => a.priority - b.priority);
+    console.log(`\n[crawl] === Feature Crawl: ${features.length} features ===`);
 
-    for (const journey of sortedJourneys) {
+    for (let fi = 0; fi < features.length; fi++) {
+      const feature = features[fi];
+
       if (screens.length >= maxScreens) {
         console.log(`[crawl] Max screens (${maxScreens}) reached, stopping`);
-        await broadcastProgress(config.jobId, "info", `Max screens (${maxScreens}) reached, stopping crawl`);
+        await broadcastProgress(config.jobId, "info", `Max screens reached, stopping crawl`);
         break;
       }
 
-      console.log(`\n[crawl] === Journey: ${journey.title} (priority ${journey.priority}) ===`);
+      console.log(`\n[crawl] --- Documenting: ${feature.name} (${fi + 1}/${features.length}) ---`);
       await broadcastProgress(
         config.jobId,
         "info",
-        `Starting journey: ${journey.title} (${journey.steps.length} steps)`,
+        `Documenting: ${feature.name} (${fi + 1}/${features.length})`,
       );
 
-      let stepsSucceeded = 0;
+      await updateJobProgress(config.jobId, {
+        screens_found: screens.length,
+        screens_crawled: screens.length,
+        current_step: `${feature.name} (${fi + 1}/${features.length})`,
+      });
 
-      for (let stepIdx = 0; stepIdx < journey.steps.length; stepIdx++) {
-        if (screens.length >= maxScreens) break;
-
-        const step = journey.steps[stepIdx];
-        const stepLabel = `Journey "${journey.title}" — Step ${stepIdx + 1}/${journey.steps.length}: ${step.action}`;
-        console.log(`[crawl] ${stepLabel}`);
-        await broadcastProgress(config.jobId, "info", stepLabel);
-
-        await updateJobProgress(config.jobId, {
-          screens_found: screens.length,
-          screens_crawled: screens.length,
-          current_step: `${journey.title} - Step ${stepIdx + 1}/${journey.steps.length}`,
-        });
+      try {
+        // Navigate to the feature's page
+        const fullUrl = feature.route.startsWith("http")
+          ? feature.route
+          : `${config.appUrl.replace(/\/$/, "")}${feature.route}`;
 
         try {
-          // (2C) Check if target URL is already captured — skip immediately
-          if (step.target_route && step.target_route !== "use_navigation") {
-            const fullTargetUrl = step.target_route.startsWith("http")
-              ? step.target_route
-              : `${config.appUrl.replace(/\/$/, "")}${step.target_route}`;
-            if (isUrlAlreadyCaptured(fullTargetUrl)) {
-              console.log(`[crawl] Skipping already-captured target: ${step.target_route}`);
-              stepsSucceeded++;
+          await page.goto(fullUrl, {
+            waitUntil: "networkidle",
+            timeoutMs: PAGE_TIMEOUT_MS,
+          });
+        } catch {
+          // Timeout OK, try clicking the sidebar link instead
+          console.log(`[crawl] Direct navigation timeout, trying sidebar click for ${feature.name}`);
+          try {
+            await stagehand.act(
+              `Click the sidebar or navigation link labeled "${feature.name}"`,
+              { timeout: 15_000 },
+            );
+          } catch {
+            console.log(`[crawl] Sidebar click also failed for ${feature.name}`);
+          }
+        }
+        await waitForSettle(page);
+
+        // Check page health
+        const healthIssue = await checkPageHealth(page);
+        if (healthIssue) {
+          console.log(`[crawl] Skipped ${feature.name}: ${healthIssue}`);
+          await broadcastProgress(config.jobId, "info", `Skipped ${feature.name}: ${healthIssue}`);
+          continue;
+        }
+
+        // Check for session expiry
+        const currentUrl = page.url();
+        if (isRedirectedToLogin(currentUrl, config.loginUrl)) {
+          const hasLoginFields = await hasActualLoginForm(page);
+          if (hasLoginFields && reAuthCount < MAX_REAUTHS && config.loginUrl && config.credentials) {
+            reAuthCount++;
+            console.log(`[crawl] Session expired, re-authenticating (${reAuthCount}/${MAX_REAUTHS})...`);
+            await broadcastProgress(config.jobId, "info", `Session expired, re-authenticating...`);
+            const reauthed = await authenticate(stagehand, page, config.loginUrl, config.credentials);
+            if (!reauthed) {
+              errors.push({ featureId: feature.id, action: "re-auth", error: "Re-authentication failed" });
               continue;
             }
-          }
-
-          const urlBeforeStep = page.url();
-
-          // Execute the navigation/action
-          await executeStep(stagehand, page, step, journey.title, config.appUrl);
-
-          // (2D) Check page health after navigation
-          const healthIssue = await checkPageHealth(page);
-          if (healthIssue) {
-            console.log(`[crawl] Skipped step: ${healthIssue}`);
-            await broadcastProgress(config.jobId, "info", `Skipped: ${healthIssue} at ${page.url()}`);
-            stepsSucceeded++;
+            // Retry navigation
+            await page.goto(fullUrl, { waitUntil: "networkidle", timeoutMs: PAGE_TIMEOUT_MS });
+            await waitForSettle(page);
+          } else if (hasLoginFields) {
+            errors.push({ featureId: feature.id, action: "navigate", error: "Session expired, re-auth cap reached" });
             continue;
           }
+        }
 
-          // (2B) Check for session expiry — but don't re-auth on auth pages visited intentionally
-          const currentUrl = page.url();
-          if (isRedirectedToLogin(currentUrl, config.loginUrl)) {
-            // Check if the step was TARGETING an auth page (e.g., documenting sign-up)
-            const targetedAuthPage = step.target_route && isAuthPageUrl(step.target_route);
-
-            if (targetedAuthPage) {
-              // The step intentionally navigated to an auth page — this is normal for logged-in users
-              // The redirect to dashboard IS the expected behavior
-              console.log(`[crawl] Navigated to auth page ${step.target_route} — redirect to dashboard is expected`);
-              stepsSucceeded++;
-              continue;
+        // Find code context for this route
+        const routeInfo = config.crawlPlan.routes.find(
+          (r) => feature.route && r.path === feature.route,
+        );
+        const codeContext = routeInfo
+          ? {
+              component: routeInfo.component,
+              fields: routeInfo.fields,
+              modals: routeInfo.modals,
+              permissions: routeInfo.permissions,
+              apiCalls: routeInfo.apiCalls,
             }
+          : null;
 
-            // Actually check if there's a login form (not just a URL pattern match)
-            const hasLoginFields = await hasActualLoginForm(page);
-            if (!hasLoginFields) {
-              // URL has auth pattern but page content is normal (redirected to dashboard)
-              console.log(`[crawl] Auth URL but no login form — session is fine, continuing`);
-            } else if (reAuthCount >= MAX_REAUTHS) {
-              console.log(`[crawl] Re-auth cap (${MAX_REAUTHS}) reached, skipping step`);
-              await broadcastProgress(config.jobId, "info", `Re-authentication cap reached, skipping step`);
-              errors.push({ journeyId: journey.id, stepIndex: stepIdx, action: step.action, error: "Re-auth cap reached" });
-              continue;
-            } else if (config.loginUrl && config.credentials) {
-              reAuthCount++;
-              console.log(`[crawl] Session expired, re-authenticating (attempt ${reAuthCount}/${MAX_REAUTHS})...`);
-              await broadcastProgress(config.jobId, "info", `Session expired, re-authenticating (${reAuthCount}/${MAX_REAUTHS})...`);
-              const reauthed = await authenticate(stagehand, page, config.loginUrl, config.credentials);
-              if (!reauthed) {
-                const failMsg = `Step ${stepIdx + 1} failed: Re-authentication failed. Continuing.`;
-                console.error(`[crawl] ${failMsg}`);
-                await broadcastProgress(config.jobId, "error", failMsg);
-                errors.push({ journeyId: journey.id, stepIndex: stepIdx, action: step.action, error: "Re-authentication failed" });
-                continue;
-              }
-              // Retry step after re-auth
-              await executeStep(stagehand, page, step, journey.title, config.appUrl);
-            }
-          }
+        // --- HERO screenshot: default state of the page ---
+        await broadcastProgress(config.jobId, "info", `Capturing ${feature.name} — default view`);
+        const heroResult = await captureScreen(page, config.jobId, {
+          featureId: feature.id,
+          featureSlug: feature.slug,
+          screenshotLabel: "hero",
+          navPath: feature.name,
+          screenType: "page",
+          codeContext,
+          orderIndex,
+          broadcastLabel: `${feature.name} — default view`,
+          descriptiveFilename: `${feature.slug}.png`,
+        });
+        if (heroResult) {
+          screens.push(heroResult.record);
+          orderIndex++;
+        }
 
-          // (2C) Check if URL changed after step — if same, action didn't work
-          if (page.url() === urlBeforeStep && step.target_route && step.target_route !== "use_navigation") {
-            console.log(`[crawl] URL unchanged after step, action may not have worked`);
-          }
-
-          // Find code context for this route
-          const routeInfo = config.crawlPlan.routes.find(
-            (r) => step.target_route && r.path === step.target_route,
-          );
-          const codeContext = routeInfo
-            ? {
-                component: routeInfo.component,
-                fields: routeInfo.fields,
-                modals: routeInfo.modals,
-                permissions: routeInfo.permissions,
-                apiCalls: routeInfo.apiCalls,
-              }
-            : null;
-
-          // Capture main screen
-          if (step.captures?.includes("page") || !step.captures || step.captures.length === 0) {
-            const result = await captureScreen(page, config.jobId, {
-              journeyId: journey.id,
-              journeyStep: stepIdx,
-              navPath: step.action,
+        // --- ACTION screenshot: fill forms with sample data ---
+        if (feature.hasForm && screens.length < maxScreens) {
+          await broadcastProgress(config.jobId, "info", `Capturing ${feature.name} — filling form`);
+          const filled = await fillFormFields(stagehand, page, feature.name);
+          if (filled) {
+            const actionResult = await captureScreen(page, config.jobId, {
+              featureId: feature.id,
+              featureSlug: feature.slug,
+              screenshotLabel: "form-filled",
+              navPath: `${feature.name} (form filled)`,
               screenType: "page",
               codeContext,
               orderIndex,
-              label: step.action,
+              broadcastLabel: `${feature.name} — form filled`,
+              descriptiveFilename: `${feature.slug}-filled.png`,
+              skipDuplicateCheck: true,
             });
-            if (result) {
-              screens.push(result.record);
+            if (actionResult) {
+              screens.push(actionResult.record);
               orderIndex++;
             }
           }
-
-          // Handle interaction (form fill, button click, etc.)
-          if (step.interaction && screens.length < maxScreens) {
-            // Screenshot before interaction
-            if (step.creates_data) {
-              const beforeResult = await captureScreen(page, config.jobId, {
-                journeyId: journey.id,
-                journeyStep: stepIdx,
-                navPath: `${step.action} - before submit`,
-                screenType: "page",
-                codeContext,
-                orderIndex,
-                label: `${step.action} - pre-submit`,
-              });
-              if (beforeResult) {
-                screens.push(beforeResult.record);
-                orderIndex++;
-              }
-            }
-
-            const entityId = await handleInteraction(stagehand, page, step);
-
-            // Screenshot after interaction
-            if (screens.length < maxScreens) {
-              const afterResult = await captureScreen(page, config.jobId, {
-                journeyId: journey.id,
-                journeyStep: stepIdx,
-                navPath: `${step.action} - after`,
-                screenType: "page",
-                codeContext,
-                orderIndex,
-                label: `${step.action} - post-action`,
-              });
-              if (afterResult) {
-                if (entityId) {
-                  afterResult.record.createdEntityId = entityId;
-                }
-                screens.push(afterResult.record);
-                orderIndex++;
-              }
-            }
-          }
-
-          // Handle modals
-          if (step.captures && screens.length < maxScreens) {
-            const modalResult = await handleModals(
-              stagehand,
-              page,
-              step.captures,
-              config.jobId,
-              journey.id,
-              orderIndex,
-            );
-            screens.push(...modalResult.records);
-            orderIndex = modalResult.nextOrderIndex;
-          }
-
-          stepsSucceeded++;
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          const failMsg = `Step ${stepIdx + 1} failed: ${errMsg}. Continuing.`;
-          console.error(`[crawl] ${failMsg}`);
-          errors.push({
-            journeyId: journey.id,
-            stepIndex: stepIdx,
-            action: step.action,
-            error: errMsg,
-          });
-          await broadcastProgress(config.jobId, "error", failMsg);
         }
-      }
 
-      // Journey completion summary
-      const journeyEndMsg = `Journey "${journey.title}" complete: ${stepsSucceeded}/${journey.steps.length} steps succeeded`;
-      console.log(`[crawl] ${journeyEndMsg}`);
-      await broadcastProgress(config.jobId, "info", journeyEndMsg);
+        console.log(`[crawl] Feature "${feature.name}" complete`);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[crawl] Feature "${feature.name}" failed: ${errMsg}`);
+        errors.push({
+          featureId: feature.id,
+          action: `crawl ${feature.name}`,
+          error: errMsg,
+        });
+        await broadcastProgress(config.jobId, "error", `Failed to document ${feature.name}: ${errMsg}`);
+      }
     }
 
     // ----- Final summary -----

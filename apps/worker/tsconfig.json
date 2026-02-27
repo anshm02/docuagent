@@ -9,6 +9,15 @@
     }
   },
   "include": ["src/**/*.ts"],
+  "exclude": [
+    "src/test-*.ts",
+    "src/check-*.ts",
+    "src/engines/doc-generator.ts",
+    "src/engines/journey-planner.ts",
+    "src/prompts/journey-planning.ts",
+    "src/prompts/journey-prose.ts",
+    "src/doc-components/**"
+  ],
   "references": [
     { "path": "../../packages/shared" }
   ]

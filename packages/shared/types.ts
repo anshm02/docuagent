@@ -66,33 +66,27 @@ export interface DiscoveryResult {
 
 export interface CostEstimate {
   screens_estimated: number;
-  journeys_planned: number;
-  journeys_available: number;
+  features_planned: number;
+  features_available: number;
   estimated_cost_cents: number;
   user_credits_cents: number;
-  journeys_cut_for_budget: number;
+  features_cut_for_budget: number;
 }
 
-// --- Journey Planning (Stage 4) ---
+// --- Feature Selection (Stage 4) ---
 
-export interface JourneyStep {
-  action: string; // human-readable: "Navigate to Projects page"
-  target_route: string; // "/projects" or "use_navigation"
-  interaction?: string; // "click 'New Project' button" or "fill form and submit"
-  captures: string[]; // what to screenshot: ["page", "modal:CreateProject"]
-  creates_data?: boolean; // if this step creates an entity
-}
-
-export interface Journey {
+export interface Feature {
   id: string;
-  title: string; // e.g., "Create Your First Project"
+  name: string; // sidebar/nav label, e.g., "Team Management"
+  slug: string; // kebab-case, e.g., "team-management"
   description: string;
-  priority: number; // 1 = creation journey (run first), 2 = viewing/editing
-  steps: JourneyStep[];
+  route: string; // the page URL path
+  hasForm: boolean;
+  priority: number; // lower = higher priority (sidebar order)
 }
 
-export interface JourneyPlanResult {
-  planned: Journey[];
+export interface FeatureSelectionResult {
+  selected: Feature[];
   additional: { title: string; description: string }[];
 }
 
@@ -123,30 +117,17 @@ export interface ScreenAnalysis {
 
 // --- Document Generation (Stage 7) ---
 
-export interface JourneyProse {
-  overview: string;
-  steps: { heading: string; body: string; screenshot_ref: string }[];
-  tips: string[];
-  troubleshooting: string[];
-}
-
-export interface CrossCuttingContent {
-  quick_start: { steps: string[] };
-  navigation_guide: string;
-  glossary: { term: string; definition: string }[];
-  faq: { question: string; answer: string }[];
-}
-
-// --- Markdown Document Generation (Stage 7 V2) ---
-
-export interface MarkdownJourneyContent {
+export interface FeaturePageContent {
   title: string;
   slug: string;
   intro: string;
-  how_to_get_there: string;
-  steps: {
-    action: string;
-    detail?: string;
+  action_groups: {
+    heading: string;
+    steps: {
+      action: string;
+      detail?: string;
+    }[];
+    screenshot_ref?: string;
   }[];
   permission_notes: string[];
   fields: {
@@ -155,16 +136,10 @@ export interface MarkdownJourneyContent {
     required: boolean;
     description: string;
   }[];
-  tips: string[];
-  related: { title: string; slug: string }[];
   hero_screenshot_ref: string;
-  step_screenshot_refs: string[];
 }
 
-export interface MarkdownCrossCutting {
-  quick_start_steps: string[];
-  navigation_description: string;
-  glossary: { term: string; definition: string }[];
+export interface MarkdownIndexContent {
   product_overview: string;
 }
 
@@ -175,7 +150,7 @@ export type JobStatus =
   | "analyzing_code"
   | "analyzing_prd"
   | "discovering"
-  | "planning_journeys"
+  | "planning_journeys" // DB column name preserved; used for feature selection stage
   | "crawling"
   | "analyzing_screens"
   | "generating_docs"
@@ -209,7 +184,7 @@ export interface Job {
   prd_file_path: string | null;
   product_description: string | null;
   config: { max_screens?: number; framework_hint?: string };
-  journeys: Journey[] | null;
+  journeys: Feature[] | null; // stores features (DB column name preserved as 'journeys')
   progress: { screens_found?: number; screens_crawled?: number; current_step?: string };
   quality_score: number | null;
   flagged_for_review: boolean;
@@ -231,11 +206,11 @@ export interface JobResult {
   total_screens: number;
   avg_confidence: number;
   duration_seconds: number;
-  journeys_completed: number;
-  journeys_total: number;
+  features_documented: number;
+  features_total: number;
   estimated_cost_cents: number;
   actual_cost_cents: number;
-  additional_journeys: { title: string; description: string }[];
+  additional_features: { title: string; description: string }[];
 }
 
 export interface Screen {
@@ -251,8 +226,8 @@ export interface Screen {
   analysis: ScreenAnalysis | null;
   confidence: number | null;
   screen_type: ScreenType;
-  journey_id: string | null;
-  journey_step: number | null;
+  journey_id: string | null; // stores feature_id (DB column name preserved)
+  journey_step: number | null; // unused in feature-based flow (DB column name preserved)
   created_entity_id: string | null;
   status: ScreenStatus;
   order_index: number | null;

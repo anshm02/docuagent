@@ -30,9 +30,9 @@ interface JobData {
     total_screens: number;
     avg_confidence: number;
     duration_seconds: number;
-    journeys_completed: number;
-    journeys_total: number;
-    additional_journeys?: { title: string; description: string }[];
+    features_documented: number;
+    features_total: number;
+    additional_features?: { title: string; description: string }[];
   } | null;
 }
 
@@ -338,21 +338,21 @@ export default function DocsViewerPage() {
             ))}
           </nav>
 
-          {/* Additional journeys upsell */}
-          {job?.result?.additional_journeys &&
-            job.result.additional_journeys.length > 0 && (
+          {/* Additional features upsell */}
+          {job?.result?.additional_features &&
+            job.result.additional_features.length > 0 && (
               <div className="mt-6 pt-4 border-t border-white/5">
                 <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider px-3 mb-2 flex items-center gap-1">
                   <Lock className="w-3 h-3" />
                   Available with upgrade
                 </p>
-                {job.result.additional_journeys.map((j, i) => (
+                {job.result.additional_features.map((f, i) => (
                   <div
                     key={i}
                     className="px-3 py-2 text-sm text-gray-600 cursor-not-allowed"
-                    title={j.description}
+                    title={f.description}
                   >
-                    {j.title}
+                    {f.title}
                   </div>
                 ))}
               </div>

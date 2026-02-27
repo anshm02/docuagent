@@ -12,7 +12,7 @@ export interface AnalysisConfig {
   jobId: string;
   appName: string;
   prdSummary: PRDSummary | null;
-  journeys: { id: string; title: string; description: string }[];
+  features: { id: string; name: string; slug: string; description: string }[];
 }
 
 export interface AnalysisResult {
@@ -46,12 +46,14 @@ async function analyzeScreen(
   screen: Screen,
   config: AnalysisConfig,
 ): Promise<{ analysis: ScreenAnalysis; error: null } | { analysis: null; error: string }> {
-  const { appName, prdSummary, journeys } = config;
+  const { appName, prdSummary, features } = config;
 
-  // Find journey context
-  const journey = journeys.find((j) => j.id === screen.journey_id);
-  const journeyTitle = journey?.title ?? "Application Navigation";
-  const journeyDescription = journey?.description ?? "Exploring the application";
+  // Find feature context
+  const feature = features.find((f) => f.id === screen.journey_id);
+  const featureName = feature?.name ?? "Application Page";
+  const featureDescription = feature?.description ?? "Application feature";
+  // Use screenshot label context from nav_path or fall back
+  const screenshotLabel = (screen as any).screenshot_label ?? "page";
 
   // Fetch screenshot
   if (!screen.screenshot_url) {
@@ -72,9 +74,9 @@ async function analyzeScreen(
     domHtml: screen.dom_html ?? "",
     codeContext: screen.code_context,
     prdSummary,
-    journeyTitle,
-    journeyDescription,
-    stepNum: screen.journey_step ?? 0,
+    featureName,
+    featureDescription,
+    screenshotLabel,
     navPath: screen.nav_path ?? "",
   });
 
@@ -199,14 +201,14 @@ export async function runScreenAnalysis(config: AnalysisConfig): Promise<Analysi
   let totalConfidence = 0;
   let highConfidenceCount = 0;
 
-  // Process in batches of CONCURRENT_ANALYSIS_BATCH
+  // Process in batches
   for (let i = 0; i < screens.length; i += CONCURRENT_ANALYSIS_BATCH) {
     const batch = screens.slice(i, i + CONCURRENT_ANALYSIS_BATCH);
     const batchNum = Math.floor(i / CONCURRENT_ANALYSIS_BATCH) + 1;
     const totalBatches = Math.ceil(screens.length / CONCURRENT_ANALYSIS_BATCH);
     console.log(`[screen-analysis] Batch ${batchNum}/${totalBatches} (${batch.length} screens)`);
 
-    const results = await Promise.all(
+    await Promise.all(
       batch.map(async (screen) => {
         const typedScreen = screen as Screen;
         console.log(`[screen-analysis] Analyzing: ${typedScreen.nav_path ?? typedScreen.url}`);
@@ -219,11 +221,11 @@ export async function runScreenAnalysis(config: AnalysisConfig): Promise<Analysi
           if (result.analysis.confidence >= CONFIDENCE_THRESHOLD) {
             highConfidenceCount++;
           }
-          console.log(`[screen-analysis] ✓ ${typedScreen.nav_path}: confidence=${result.analysis.confidence}`);
+          console.log(`[screen-analysis] Done: ${typedScreen.nav_path}: confidence=${result.analysis.confidence}`);
         } else {
           await markScreenFailed(typedScreen.id);
           failures.push({ screenId: typedScreen.id, error: result.error });
-          console.error(`[screen-analysis] ✗ ${typedScreen.nav_path}: ${result.error}`);
+          console.error(`[screen-analysis] Failed: ${typedScreen.nav_path}: ${result.error}`);
         }
 
         return result;

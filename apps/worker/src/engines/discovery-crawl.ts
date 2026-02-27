@@ -150,24 +150,116 @@ async function discoverRoute(
   return result;
 }
 
+async function extractNavLinks(page: Page, appUrl: string): Promise<string[]> {
+  try {
+    // Wait for page to settle and render navigation
+    await waitForSettle(page);
+    await new Promise((r) => setTimeout(r, 2000));
+
+    const links = await page.evaluate(() => {
+      const d = (globalThis as any).document;
+      const results: { href: string; text: string }[] = [];
+
+      // Strategy 1: Look for nav/sidebar links (common patterns)
+      const navSelectors = [
+        "nav a", "[role='navigation'] a", "aside a",
+        ".sidebar a", ".nav a", "[class*='sidebar'] a", "[class*='nav'] a",
+        "[class*='menu'] a", "[class*='Sidebar'] a", "[class*='Nav'] a",
+      ];
+      const navAnchors = d.querySelectorAll(navSelectors.join(", "));
+      navAnchors.forEach((el: any) => {
+        const href = el.getAttribute("href");
+        const text = el.innerText?.trim();
+        if (href && text && text.length > 0 && text.length < 50) {
+          results.push({ href, text });
+        }
+      });
+
+      // Strategy 2: If no nav links found, grab all internal <a> links from body
+      if (results.length === 0) {
+        const allAnchors = d.querySelectorAll("a[href]");
+        allAnchors.forEach((el: any) => {
+          const href = el.getAttribute("href");
+          const text = el.innerText?.trim();
+          if (
+            href &&
+            text &&
+            text.length > 0 &&
+            text.length < 50 &&
+            !href.startsWith("http") &&
+            !href.startsWith("#") &&
+            !href.startsWith("javascript:") &&
+            !href.startsWith("mailto:")
+          ) {
+            results.push({ href, text });
+          }
+        });
+      }
+
+      return results.map((r) => r.href);
+    }) as string[];
+
+    console.log(`[discovery] Raw nav links found: ${links.length}`);
+
+    // Normalize and deduplicate
+    const baseHost = new URL(appUrl).host;
+    const seen = new Set<string>();
+    const unique: string[] = [];
+    // Skip auth-related paths
+    const skipPatterns = ["/sign-in", "/sign-up", "/login", "/register", "/auth", "/forgot", "/reset"];
+
+    for (const href of links) {
+      let path: string;
+      try {
+        const u = new URL(href, appUrl);
+        if (u.host !== baseHost) continue; // skip external links
+        path = u.pathname;
+      } catch {
+        path = href;
+      }
+      // Skip root, auth paths, and very short paths
+      if (path === "/" || path === "") continue;
+      if (skipPatterns.some((p) => path.toLowerCase().includes(p))) continue;
+      if (!seen.has(path)) {
+        seen.add(path);
+        unique.push(path);
+      }
+    }
+    return unique;
+  } catch (err) {
+    console.error("[discovery] Failed to extract nav links:", err);
+    return [];
+  }
+}
+
 export async function runDiscoveryCrawl(config: DiscoveryCrawlConfig): Promise<DiscoveryResult[]> {
   const { jobId, page, appUrl, crawlPlan } = config;
   const results: DiscoveryResult[] = [];
 
-  if (crawlPlan.routes.length === 0) {
-    console.log("[discovery] No routes from code analysis, skipping discovery");
-    await broadcastProgress(jobId, "No routes to discover — will use browser navigation fallback");
-    return results;
+  let routePaths: string[];
+
+  if (crawlPlan.routes.length > 0) {
+    routePaths = crawlPlan.routes.map((r) => r.path);
+    console.log(`[discovery] Discovering ${routePaths.length} routes from code analysis...`);
+    await broadcastProgress(jobId, `Discovering ${routePaths.length} routes from code analysis...`);
+  } else {
+    // Fallback: extract nav links from the current page (already authenticated)
+    console.log("[discovery] No code analysis routes, extracting nav links from current page...");
+    await broadcastProgress(jobId, "No code analysis — discovering features from app navigation...");
+    routePaths = await extractNavLinks(page, appUrl);
+    console.log(`[discovery] Found ${routePaths.length} nav links: ${routePaths.join(", ")}`);
+    if (routePaths.length === 0) {
+      console.log("[discovery] No nav links found on current page");
+      return results;
+    }
+    await broadcastProgress(jobId, `Found ${routePaths.length} navigation links to explore`);
   }
 
-  console.log(`[discovery] Discovering ${crawlPlan.routes.length} routes...`);
-  await broadcastProgress(jobId, `Discovering ${crawlPlan.routes.length} routes from code analysis...`);
+  for (let i = 0; i < routePaths.length; i++) {
+    const routePath = routePaths[i];
+    console.log(`[discovery] [${i + 1}/${routePaths.length}] Visiting: ${routePath}`);
 
-  for (let i = 0; i < crawlPlan.routes.length; i++) {
-    const route = crawlPlan.routes[i];
-    console.log(`[discovery] [${i + 1}/${crawlPlan.routes.length}] Visiting: ${route.path}`);
-
-    const result = await discoverRoute(page, jobId, appUrl, route.path);
+    const result = await discoverRoute(page, jobId, appUrl, routePath);
     results.push(result);
 
     const status = result.isAccessible

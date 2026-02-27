@@ -1,6 +1,6 @@
 // ============================================================
-// DocuAgent — Cost Budget System (V2)
-// Estimates job cost, calculates max journeys within budget,
+// DocuAgent — Cost Budget System (V2 — Feature-based)
+// Estimates job cost, calculates max features within budget,
 // checks credits, deducts after completion.
 // ============================================================
 
@@ -8,11 +8,11 @@ import { getSupabase } from "./supabase.js";
 import type { CostEstimate, DiscoveryResult } from "@docuagent/shared";
 import {
   COST_FIXED_OVERHEAD_CENTS,
-  COST_PER_JOURNEY_CENTS,
+  COST_PER_FEATURE_CENTS,
   COST_PER_SCREEN_ANALYSIS_CENTS,
-  COST_PER_JOURNEY_PROSE_CENTS,
+  COST_PER_FEATURE_PROSE_CENTS,
   COST_CROSS_CUTTING_CENTS,
-  MAX_FREE_TIER_JOURNEYS,
+  MAX_FREE_TIER_FEATURES,
 } from "@docuagent/shared";
 
 export async function getUserCredits(userId: string): Promise<number> {
@@ -38,35 +38,34 @@ export async function checkUserCredits(userId: string): Promise<{ hasCredits: bo
 
 export function estimateCost(
   discoveryResults: DiscoveryResult[],
-  totalPossibleJourneys: number,
+  totalPossibleFeatures: number,
   userCreditsCents: number,
 ): CostEstimate {
-  const accessiblePages = discoveryResults.filter((r) => r.isAccessible && !r.hasError);
-  const avgScreensPerJourney = 4;
+  const avgScreensPerFeature = 2; // hero + action
 
-  // Calculate max journeys that fit within budget
+  // Calculate max features that fit within budget
   const availableBudget = userCreditsCents - COST_FIXED_OVERHEAD_CENTS;
-  let maxJourneys = Math.floor(availableBudget / COST_PER_JOURNEY_CENTS);
-  maxJourneys = Math.min(maxJourneys, totalPossibleJourneys);
-  maxJourneys = Math.max(maxJourneys, 1); // always at least 1
-  maxJourneys = Math.min(maxJourneys, MAX_FREE_TIER_JOURNEYS); // cap for free tier
+  let maxFeatures = Math.floor(availableBudget / COST_PER_FEATURE_CENTS);
+  maxFeatures = Math.min(maxFeatures, totalPossibleFeatures);
+  maxFeatures = Math.max(maxFeatures, 1); // always at least 1
+  maxFeatures = Math.min(maxFeatures, MAX_FREE_TIER_FEATURES); // cap for free tier
 
-  const screensEstimated = maxJourneys * avgScreensPerJourney;
+  const screensEstimated = maxFeatures * avgScreensPerFeature;
   const estimatedCostCents =
     COST_FIXED_OVERHEAD_CENTS +
     (screensEstimated * COST_PER_SCREEN_ANALYSIS_CENTS) +
-    (maxJourneys * COST_PER_JOURNEY_PROSE_CENTS) +
+    (maxFeatures * COST_PER_FEATURE_PROSE_CENTS) +
     COST_CROSS_CUTTING_CENTS;
 
-  const journeysCutForBudget = Math.max(0, totalPossibleJourneys - maxJourneys);
+  const featuresCutForBudget = Math.max(0, totalPossibleFeatures - maxFeatures);
 
   return {
     screens_estimated: screensEstimated,
-    journeys_planned: maxJourneys,
-    journeys_available: totalPossibleJourneys,
+    features_planned: maxFeatures,
+    features_available: totalPossibleFeatures,
     estimated_cost_cents: estimatedCostCents,
     user_credits_cents: userCreditsCents,
-    journeys_cut_for_budget: journeysCutForBudget,
+    features_cut_for_budget: featuresCutForBudget,
   };
 }
 

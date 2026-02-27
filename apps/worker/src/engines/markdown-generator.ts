@@ -1,19 +1,18 @@
 // ============================================================
-// DocuAgent — Markdown Documentation Generator (Stage 7 V2)
-// Replaces .docx with a folder of .md files + images + .zip
+// DocuAgent — Markdown Documentation Generator (Feature-based)
+// Generates one .md file per feature + index.md + .zip
 // ============================================================
 
 import { getSupabase } from "../lib/supabase.js";
 import { claudeText, parseJsonResponse } from "../lib/claude.js";
-import { journeyProsePrompt } from "../prompts/journey-prose.js";
-import { crossCuttingPrompt, productOverviewPrompt } from "../prompts/cross-cutting.js";
+import { featureProsePrompt } from "../prompts/feature-prose.js";
+import { overviewPrompt } from "../prompts/cross-cutting.js";
 import type {
   Screen,
   ScreenAnalysis,
-  Journey,
+  Feature,
   PRDSummary,
-  MarkdownJourneyContent,
-  MarkdownCrossCutting,
+  FeaturePageContent,
 } from "@docuagent/shared";
 
 // ---------------------------------------------------------------------------
@@ -23,8 +22,9 @@ import type {
 export interface MarkdownGenConfig {
   jobId: string;
   appName: string;
+  appUrl: string;
   prdSummary: PRDSummary | null;
-  journeys: Journey[];
+  features: Feature[];
 }
 
 export interface MarkdownGenResult {
@@ -60,7 +60,6 @@ async function fetchScreenshotBuffer(url: string): Promise<Buffer | null> {
     const response = await fetch(url);
     if (!response.ok) return null;
     const contentType = response.headers.get("content-type") ?? "";
-    // If we got HTML instead of an image, the upload failed — retry after delay
     if (contentType.includes("text/html")) {
       console.log(`[md-gen] Got HTML instead of image for ${url}, retrying after 3s...`);
       await new Promise((r) => setTimeout(r, 3000));
@@ -96,42 +95,37 @@ async function broadcastProgress(jobId: string, message: string): Promise<void> 
 // AI Content Generation
 // ---------------------------------------------------------------------------
 
-async function generateJourneyMarkdown(
-  journeyTitle: string,
-  journeyDescription: string,
+async function generateFeaturePageContent(
+  featureName: string,
+  featureDescription: string,
   screens: Screen[],
   prdSummary: PRDSummary | null,
-  availableSlugs?: string[],
-): Promise<MarkdownJourneyContent> {
+): Promise<FeaturePageContent> {
   const screenAnalyses = screens
     .filter((s) => s.analysis)
-    .map((s, idx) => ({
-      stepNum: s.journey_step ?? idx,
+    .map((s) => ({
       navPath: s.nav_path ?? "",
       analysis: s.analysis as ScreenAnalysis,
       screenshotRef: `screen_${s.order_index}`,
+      screenshotLabel: (s as any).screenshot_label ?? "hero",
       codeContext: s.code_context,
     }));
 
   if (screenAnalyses.length === 0) {
     return {
-      title: journeyTitle,
-      slug: slugify(journeyTitle),
-      intro: journeyDescription,
-      how_to_get_there: "Navigate using the sidebar menu.",
-      steps: [{ action: "Follow the on-screen instructions." }],
+      title: featureName,
+      slug: slugify(featureName),
+      intro: featureDescription,
+      action_groups: [{ heading: featureName, steps: [{ action: "Follow the on-screen instructions." }] }],
       permission_notes: [],
       fields: [],
-      tips: [],
-      related: [],
       hero_screenshot_ref: "",
-      step_screenshot_refs: [],
     };
   }
 
-  const prompt = journeyProsePrompt({
-    journeyTitle,
-    journeyDescription,
+  const prompt = featureProsePrompt({
+    featureName,
+    featureDescription,
     screenAnalyses,
     prdSummary: prdSummary
       ? {
@@ -140,7 +134,6 @@ async function generateJourneyMarkdown(
           user_roles: prdSummary.user_roles,
         }
       : null,
-    availableSlugs,
   });
 
   try {
@@ -148,85 +141,56 @@ async function generateJourneyMarkdown(
     const parsed = parseJsonResponse<{
       title: string;
       intro: string;
-      how_to_get_there: string;
-      steps: { action: string; detail?: string }[];
+      action_groups: {
+        heading: string;
+        steps: { action: string; detail?: string }[];
+        screenshot_ref?: string;
+      }[];
       permission_notes?: string[];
       fields?: { label: string; type: string; required: boolean; description: string }[];
-      tips?: string[];
-      related_slugs?: string[];
     }>(raw);
 
     return {
-      title: parsed.title || journeyTitle,
-      slug: slugify(parsed.title || journeyTitle),
+      title: parsed.title || featureName,
+      slug: slugify(parsed.title || featureName),
       intro: parsed.intro,
-      how_to_get_there: parsed.how_to_get_there,
-      steps: parsed.steps,
+      action_groups: parsed.action_groups ?? [],
       permission_notes: parsed.permission_notes ?? [],
       fields: parsed.fields ?? [],
-      tips: parsed.tips ?? [],
-      related: (parsed.related_slugs ?? [])
-        .filter((slug) => availableSlugs?.includes(slug))
-        .map((slug) => ({ title: slug.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()), slug })),
       hero_screenshot_ref: screenAnalyses[0]?.screenshotRef ?? "",
-      step_screenshot_refs: screenAnalyses.map((sa) => sa.screenshotRef),
     };
   } catch (err) {
-    console.error(`[md-gen] Journey prose generation failed for "${journeyTitle}":`, err);
+    console.error(`[md-gen] Feature prose generation failed for "${featureName}":`, err);
     return {
-      title: journeyTitle,
-      slug: slugify(journeyTitle),
-      intro: journeyDescription,
-      how_to_get_there: screenAnalyses[0]?.analysis.navigation_path ?? "Use the sidebar navigation.",
-      steps: screenAnalyses.map((sa) => ({
-        action: sa.analysis.page_title,
-        detail: sa.analysis.purpose,
+      title: featureName,
+      slug: slugify(featureName),
+      intro: featureDescription,
+      action_groups: screenAnalyses.map((sa) => ({
+        heading: sa.analysis.page_title,
+        steps: sa.analysis.actions.map((a) => ({ action: a.description })),
       })),
       permission_notes: [],
       fields: screenAnalyses.flatMap((sa) => sa.analysis.fields),
-      tips: screenAnalyses.flatMap((sa) => sa.analysis.tips).slice(0, 3),
-      related: [],
       hero_screenshot_ref: screenAnalyses[0]?.screenshotRef ?? "",
-      step_screenshot_refs: screenAnalyses.map((sa) => sa.screenshotRef),
     };
   }
 }
 
-async function generateCrossCutting(
+async function generateOverview(
   appName: string,
-  screens: Screen[],
+  appUrl: string,
+  features: { name: string; slug: string; description: string }[],
   prdSummary: PRDSummary | null,
-): Promise<MarkdownCrossCutting> {
-  const screenIndex = screens
-    .filter((s) => s.analysis)
-    .map((s) => {
-      const analysis = s.analysis as ScreenAnalysis;
-      return {
-        pageTitle: analysis.page_title,
-        purpose: analysis.purpose,
-        navigationPath: analysis.navigation_path,
-      };
-    });
-
-  const prompt = crossCuttingPrompt({ appName, screenIndex, prdSummary });
+): Promise<string> {
+  const prompt = overviewPrompt({ appName, appUrl, featureList: features, prdSummary });
 
   try {
-    const raw = await claudeText(prompt, { maxTokens: 3000, temperature: 0 });
-    return parseJsonResponse<MarkdownCrossCutting>(raw);
+    const raw = await claudeText(prompt, { maxTokens: 1000, temperature: 0 });
+    const parsed = parseJsonResponse<{ product_overview: string }>(raw);
+    return parsed.product_overview;
   } catch (err) {
-    console.error("[md-gen] Cross-cutting content generation failed:", err);
-    return {
-      quick_start_steps: [
-        `Log in to **${appName}**.`,
-        "Explore the main dashboard.",
-        "Navigate using the sidebar.",
-        "Create your first item.",
-        "Configure your settings.",
-      ],
-      navigation_description: `${appName} uses a sidebar for primary navigation. The main content area displays the selected section.`,
-      glossary: [],
-      product_overview: `${appName} is a web application that helps teams manage their workflow.`,
-    };
+    console.error("[md-gen] Overview generation failed:", err);
+    return `${appName} is a web application that helps teams manage their workflow.`;
   }
 }
 
@@ -234,8 +198,8 @@ async function generateCrossCutting(
 // Markdown File Builders
 // ---------------------------------------------------------------------------
 
-function buildJourneyMarkdown(
-  content: MarkdownJourneyContent,
+function buildFeatureMarkdown(
+  content: FeaturePageContent,
   screenshotFilenames: Map<string, string>,
 ): string {
   const lines: string[] = [];
@@ -255,32 +219,29 @@ function buildJourneyMarkdown(
     lines.push("");
   }
 
-  // How to get there
-  lines.push("## How to get there");
-  lines.push("");
-  lines.push(content.how_to_get_there);
-  lines.push("");
+  // Action groups
+  for (const group of content.action_groups) {
+    lines.push(`## ${group.heading}`);
+    lines.push("");
 
-  // Steps
-  lines.push("## Steps");
-  lines.push("");
-  for (let i = 0; i < content.steps.length; i++) {
-    const step = content.steps[i];
-    lines.push(`${i + 1}. ${step.action}`);
-    if (step.detail) {
-      lines.push(`   ${step.detail}`);
+    for (let i = 0; i < group.steps.length; i++) {
+      const step = group.steps[i];
+      lines.push(`${i + 1}. ${step.action}`);
+      if (step.detail) {
+        lines.push(`   ${step.detail}`);
+      }
     }
-    // Insert screenshot after step if available
-    const stepRef = content.step_screenshot_refs[i];
-    if (stepRef) {
-      const filename = screenshotFilenames.get(stepRef);
-      if (filename && stepRef !== content.hero_screenshot_ref) {
+    lines.push("");
+
+    // Action group screenshot
+    if (group.screenshot_ref) {
+      const filename = screenshotFilenames.get(group.screenshot_ref);
+      if (filename && filename !== heroFilename) {
+        lines.push(`![${group.heading}](./images/${filename})`);
         lines.push("");
-        lines.push(`   ![Step ${i + 1}](./images/${filename})`);
       }
     }
   }
-  lines.push("");
 
   // Permission notes
   if (content.permission_notes.length > 0) {
@@ -304,34 +265,14 @@ function buildJourneyMarkdown(
     lines.push("");
   }
 
-  // Tips
-  if (content.tips.length > 0) {
-    lines.push("## Tips");
-    lines.push("");
-    for (const tip of content.tips) {
-      lines.push(`- ${tip}`);
-    }
-    lines.push("");
-  }
-
-  // Related links
-  if (content.related.length > 0) {
-    lines.push("## Related");
-    lines.push("");
-    for (const rel of content.related) {
-      lines.push(`- [${rel.title}](./${rel.slug}.md)`);
-    }
-    lines.push("");
-  }
-
   return lines.join("\n");
 }
 
 function buildIndexMarkdown(
   appName: string,
+  appUrl: string,
   overview: string,
-  journeys: { title: string; slug: string }[],
-  hasGlossary: boolean,
+  features: { title: string; slug: string; description: string }[],
 ): string {
   const lines: string[] = [];
 
@@ -339,25 +280,18 @@ function buildIndexMarkdown(
   lines.push("");
   lines.push(overview);
   lines.push("");
-  lines.push("---");
+  lines.push("## Getting Started");
   lines.push("");
-  lines.push("## Contents");
+  lines.push(`1. Go to [${appUrl}](${appUrl}) and create an account with your email and password.`);
+  lines.push("2. Sign in to access the dashboard.");
+  lines.push("3. Use the sidebar to navigate between features.");
   lines.push("");
-  lines.push("- [Quick Start](./quick-start.md)");
-  lines.push("- [Navigation](./navigation.md)");
+  lines.push("## Features");
   lines.push("");
-  lines.push("### Guides");
-  lines.push("");
-  for (const j of journeys) {
-    lines.push(`- [${j.title}](./${j.slug}.md)`);
+  for (const f of features) {
+    lines.push(`- [${f.title}](./${f.slug}.md) — ${f.description}`);
   }
   lines.push("");
-  if (hasGlossary) {
-    lines.push("### Reference");
-    lines.push("");
-    lines.push("- [Glossary](./glossary.md)");
-    lines.push("");
-  }
   lines.push("---");
   lines.push("");
   lines.push(`*Generated by DocuAgent on ${new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}*`);
@@ -366,59 +300,13 @@ function buildIndexMarkdown(
   return lines.join("\n");
 }
 
-function buildQuickStartMarkdown(appName: string, steps: string[]): string {
-  const lines: string[] = [];
-
-  lines.push(`# Quick Start`);
-  lines.push("");
-  lines.push(`Get up and running with **${appName}** in five steps.`);
-  lines.push("");
-  for (let i = 0; i < steps.length; i++) {
-    lines.push(`${i + 1}. ${steps[i]}`);
-  }
-  lines.push("");
-
-  return lines.join("\n");
-}
-
-function buildNavigationMarkdown(description: string): string {
-  const lines: string[] = [];
-
-  lines.push("# Navigation");
-  lines.push("");
-  lines.push(description);
-  lines.push("");
-
-  return lines.join("\n");
-}
-
-function buildGlossaryMarkdown(
-  glossary: { term: string; definition: string }[],
-): string {
-  const lines: string[] = [];
-
-  lines.push("# Glossary");
-  lines.push("");
-  const sorted = [...glossary].sort((a, b) => a.term.localeCompare(b.term));
-  for (const entry of sorted) {
-    lines.push(`**${entry.term}**`);
-    lines.push(`${entry.definition}`);
-    lines.push("");
-  }
-
-  return lines.join("\n");
-}
-
 // ---------------------------------------------------------------------------
-// Zip creation (simple tar-like buffer — stores files as concatenated entries)
-// We use a minimal approach: upload individual files + create a simple zip
+// Zip creation
 // ---------------------------------------------------------------------------
 
-// Minimal ZIP file creation without external dependencies
 function createZipBuffer(
   files: { path: string; content: Buffer }[],
 ): Buffer {
-  // Simple ZIP format implementation
   const localHeaders: Buffer[] = [];
   const centralHeaders: Buffer[] = [];
   let offset = 0;
@@ -427,42 +315,40 @@ function createZipBuffer(
     const pathBuf = Buffer.from(file.path, "utf8");
     const content = file.content;
 
-    // Local file header (30 bytes + path + content)
     const localHeader = Buffer.alloc(30);
-    localHeader.writeUInt32LE(0x04034b50, 0); // Local file header signature
-    localHeader.writeUInt16LE(20, 4); // Version needed
-    localHeader.writeUInt16LE(0, 6); // General purpose bit flag
-    localHeader.writeUInt16LE(0, 8); // Compression method (0 = stored)
-    localHeader.writeUInt16LE(0, 10); // Last mod file time
-    localHeader.writeUInt16LE(0, 12); // Last mod file date
-    localHeader.writeUInt32LE(crc32(content), 14); // CRC-32
-    localHeader.writeUInt32LE(content.length, 18); // Compressed size
-    localHeader.writeUInt32LE(content.length, 22); // Uncompressed size
-    localHeader.writeUInt16LE(pathBuf.length, 26); // File name length
-    localHeader.writeUInt16LE(0, 28); // Extra field length
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4);
+    localHeader.writeUInt16LE(0, 6);
+    localHeader.writeUInt16LE(0, 8);
+    localHeader.writeUInt16LE(0, 10);
+    localHeader.writeUInt16LE(0, 12);
+    localHeader.writeUInt32LE(crc32(content), 14);
+    localHeader.writeUInt32LE(content.length, 18);
+    localHeader.writeUInt32LE(content.length, 22);
+    localHeader.writeUInt16LE(pathBuf.length, 26);
+    localHeader.writeUInt16LE(0, 28);
 
     const localEntry = Buffer.concat([localHeader, pathBuf, content]);
     localHeaders.push(localEntry);
 
-    // Central directory header (46 bytes + path)
     const centralHeader = Buffer.alloc(46);
-    centralHeader.writeUInt32LE(0x02014b50, 0); // Central directory header signature
-    centralHeader.writeUInt16LE(20, 4); // Version made by
-    centralHeader.writeUInt16LE(20, 6); // Version needed
-    centralHeader.writeUInt16LE(0, 8); // General purpose bit flag
-    centralHeader.writeUInt16LE(0, 10); // Compression method
-    centralHeader.writeUInt16LE(0, 12); // Last mod file time
-    centralHeader.writeUInt16LE(0, 14); // Last mod file date
-    centralHeader.writeUInt32LE(crc32(content), 16); // CRC-32
-    centralHeader.writeUInt32LE(content.length, 20); // Compressed size
-    centralHeader.writeUInt32LE(content.length, 24); // Uncompressed size
-    centralHeader.writeUInt16LE(pathBuf.length, 28); // File name length
-    centralHeader.writeUInt16LE(0, 30); // Extra field length
-    centralHeader.writeUInt16LE(0, 32); // File comment length
-    centralHeader.writeUInt16LE(0, 34); // Disk number start
-    centralHeader.writeUInt16LE(0, 36); // Internal file attributes
-    centralHeader.writeUInt32LE(0, 38); // External file attributes
-    centralHeader.writeUInt32LE(offset, 42); // Relative offset of local header
+    centralHeader.writeUInt32LE(0x02014b50, 0);
+    centralHeader.writeUInt16LE(20, 4);
+    centralHeader.writeUInt16LE(20, 6);
+    centralHeader.writeUInt16LE(0, 8);
+    centralHeader.writeUInt16LE(0, 10);
+    centralHeader.writeUInt16LE(0, 12);
+    centralHeader.writeUInt16LE(0, 14);
+    centralHeader.writeUInt32LE(crc32(content), 16);
+    centralHeader.writeUInt32LE(content.length, 20);
+    centralHeader.writeUInt32LE(content.length, 24);
+    centralHeader.writeUInt16LE(pathBuf.length, 28);
+    centralHeader.writeUInt16LE(0, 30);
+    centralHeader.writeUInt16LE(0, 32);
+    centralHeader.writeUInt16LE(0, 34);
+    centralHeader.writeUInt16LE(0, 36);
+    centralHeader.writeUInt32LE(0, 38);
+    centralHeader.writeUInt32LE(offset, 42);
 
     centralHeaders.push(Buffer.concat([centralHeader, pathBuf]));
     offset += localEntry.length;
@@ -471,21 +357,19 @@ function createZipBuffer(
   const centralDir = Buffer.concat(centralHeaders);
   const centralDirOffset = offset;
 
-  // End of central directory record (22 bytes)
   const endRecord = Buffer.alloc(22);
-  endRecord.writeUInt32LE(0x06054b50, 0); // End of central directory signature
-  endRecord.writeUInt16LE(0, 4); // Number of this disk
-  endRecord.writeUInt16LE(0, 6); // Disk where central directory starts
-  endRecord.writeUInt16LE(files.length, 8); // Number of central directory records on this disk
-  endRecord.writeUInt16LE(files.length, 10); // Total number of central directory records
-  endRecord.writeUInt32LE(centralDir.length, 12); // Size of central directory
-  endRecord.writeUInt32LE(centralDirOffset, 16); // Offset of start of central directory
-  endRecord.writeUInt16LE(0, 20); // Comment length
+  endRecord.writeUInt32LE(0x06054b50, 0);
+  endRecord.writeUInt16LE(0, 4);
+  endRecord.writeUInt16LE(0, 6);
+  endRecord.writeUInt16LE(files.length, 8);
+  endRecord.writeUInt16LE(files.length, 10);
+  endRecord.writeUInt32LE(centralDir.length, 12);
+  endRecord.writeUInt32LE(centralDirOffset, 16);
+  endRecord.writeUInt16LE(0, 20);
 
   return Buffer.concat([...localHeaders, centralDir, endRecord]);
 }
 
-// CRC-32 implementation
 function crc32(buf: Buffer): number {
   let crc = 0xffffffff;
   for (let i = 0; i < buf.length; i++) {
@@ -533,7 +417,6 @@ async function uploadFile(
     .upload(path, buffer, { contentType, upsert: true });
 
   if (error) {
-    // Try creating bucket and retry
     await ensureBucket(bucketName);
     const { error: retryErr } = await supabase.storage
       .from(bucketName)
@@ -575,7 +458,7 @@ export async function runMarkdownGenerator(
 
   console.log(`[md-gen] ${screens.length} screens total, ${analyzedScreens.length} analyzed`);
 
-  // ----- Fetch + upload screenshots to images/ -----
+  // ----- Fetch + upload screenshots to images/ with descriptive names -----
   console.log("[md-gen] Fetching screenshots...");
   const screenshotFilenames = new Map<string, string>();
   const imageFiles: { path: string; content: Buffer }[] = [];
@@ -587,11 +470,20 @@ export async function runMarkdownGenerator(
       if (!buf) return;
 
       const ref = `screen_${screen.order_index}`;
-      const filename = `${ref}.png`;
+      // Use the descriptive filename from the crawl engine if available
+      // Extract filename from the screenshot_url (e.g., "team-management.png")
+      let filename: string;
+      try {
+        const urlPath = new URL(screen.screenshot_url).pathname;
+        const parts = urlPath.split("/");
+        filename = parts[parts.length - 1] || `${ref}.png`;
+      } catch {
+        filename = `${ref}.png`;
+      }
+
       screenshotFilenames.set(ref, filename);
       screenshotCount++;
 
-      // Upload to Supabase
       await uploadFile(
         "documents",
         `${basePath}/images/${filename}`,
@@ -607,105 +499,71 @@ export async function runMarkdownGenerator(
   console.log("[md-gen] Generating AI content...");
   await broadcastProgress(config.jobId, "Generating documentation content with AI...");
 
-  // Group screens by journey
-  const journeyMap = new Map<string, Screen[]>();
+  // Group screens by feature
+  const featureMap = new Map<string, Screen[]>();
   for (const screen of analyzedScreens) {
-    const jid = screen.journey_id ?? "unknown";
-    if (!journeyMap.has(jid)) journeyMap.set(jid, []);
-    journeyMap.get(jid)!.push(screen);
+    const fid = screen.journey_id ?? "unknown";
+    if (!featureMap.has(fid)) featureMap.set(fid, []);
+    featureMap.get(fid)!.push(screen);
   }
 
-  // Build journey info
-  const journeyInfos: { id: string; title: string; description: string }[] = [];
-  if (config.journeys && config.journeys.length > 0) {
-    for (const j of config.journeys) {
-      journeyInfos.push({ id: j.id, title: j.title, description: j.description });
-    }
-  } else {
-    for (const [jid, jScreens] of journeyMap) {
-      const firstAnalysis = jScreens[0]?.analysis as ScreenAnalysis | null;
-      journeyInfos.push({
-        id: jid,
-        title: firstAnalysis?.page_title ?? `Journey: ${jid}`,
-        description: "Application workflow",
-      });
-    }
-  }
-
-  // Generate journey content
-  const journeyContents: MarkdownJourneyContent[] = [];
+  // Generate feature page content
+  const featureContents: { content: FeaturePageContent; feature: Feature }[] = [];
   const mdFiles: { path: string; content: Buffer }[] = [];
 
-  // Pre-compute all journey slugs so we can pass them for related links (3A)
-  const allJourneySlugs = journeyInfos
-    .filter((j) => (journeyMap.get(j.id) ?? []).length > 0)
-    .map((j) => slugify(j.title));
+  for (const feature of config.features) {
+    const fScreens = featureMap.get(feature.id) ?? [];
+    if (fScreens.length === 0) {
+      console.log(`[md-gen] No analyzed screens for feature: ${feature.name}, skipping`);
+      continue;
+    }
 
-  for (const jInfo of journeyInfos) {
-    const jScreens = journeyMap.get(jInfo.id) ?? [];
-    if (jScreens.length === 0) continue;
+    console.log(`[md-gen] Generating markdown for feature: ${feature.name} (${fScreens.length} screens)`);
+    await broadcastProgress(config.jobId, `Writing feature page: ${feature.name}`);
 
-    console.log(`[md-gen] Generating markdown for journey: ${jInfo.title} (${jScreens.length} screens)`);
-    await broadcastProgress(config.jobId, `Writing guide: ${jInfo.title}`);
-
-    // Pass available slugs excluding the current journey's own slug
-    const currentSlug = slugify(jInfo.title);
-    const otherSlugs = allJourneySlugs.filter((s) => s !== currentSlug);
-
-    const content = await generateJourneyMarkdown(
-      jInfo.title,
-      jInfo.description,
-      jScreens,
+    const content = await generateFeaturePageContent(
+      feature.name,
+      feature.description,
+      fScreens,
       config.prdSummary,
-      otherSlugs,
     );
-    journeyContents.push(content);
+    featureContents.push({ content, feature });
 
-    // Build and upload journey .md
-    const md = buildJourneyMarkdown(content, screenshotFilenames);
-    const journeyPath = `${basePath}/${content.slug}.md`;
-    await uploadFile("documents", journeyPath, md, "text/markdown");
-    mdFiles.push({ path: `docs/${content.slug}.md`, content: Buffer.from(md, "utf8") });
-    sections.push(`Journey: ${content.title}`);
+    // Build and upload feature .md
+    const md = buildFeatureMarkdown(content, screenshotFilenames);
+    const featurePath = `${basePath}/${feature.slug}.md`;
+    await uploadFile("documents", featurePath, md, "text/markdown");
+    mdFiles.push({ path: `docs/${feature.slug}.md`, content: Buffer.from(md, "utf8") });
+    sections.push(`Feature: ${content.title}`);
   }
 
-  // Generate cross-cutting content
-  console.log("[md-gen] Generating cross-cutting content...");
-  await broadcastProgress(config.jobId, "Writing quick start and navigation guides...");
+  // Generate overview content for index.md
+  console.log("[md-gen] Generating overview...");
+  await broadcastProgress(config.jobId, "Writing overview...");
 
-  const crossCutting = await generateCrossCutting(
+  const featureList = featureContents.map(({ content, feature }) => ({
+    name: content.title,
+    slug: feature.slug,
+    description: feature.description,
+  }));
+
+  const overview = await generateOverview(
     config.appName,
-    analyzedScreens,
+    config.appUrl,
+    featureList,
     config.prdSummary,
   );
-
-  // Quick Start
-  const quickStartMd = buildQuickStartMarkdown(config.appName, crossCutting.quick_start_steps);
-  await uploadFile("documents", `${basePath}/quick-start.md`, quickStartMd, "text/markdown");
-  mdFiles.push({ path: "docs/quick-start.md", content: Buffer.from(quickStartMd, "utf8") });
-  sections.push("Quick Start");
-
-  // Navigation
-  const navMd = buildNavigationMarkdown(crossCutting.navigation_description);
-  await uploadFile("documents", `${basePath}/navigation.md`, navMd, "text/markdown");
-  mdFiles.push({ path: "docs/navigation.md", content: Buffer.from(navMd, "utf8") });
-  sections.push("Navigation");
-
-  // Glossary (only if terms exist)
-  const hasGlossary = crossCutting.glossary.length > 0;
-  if (hasGlossary) {
-    const glossaryMd = buildGlossaryMarkdown(crossCutting.glossary);
-    await uploadFile("documents", `${basePath}/glossary.md`, glossaryMd, "text/markdown");
-    mdFiles.push({ path: "docs/glossary.md", content: Buffer.from(glossaryMd, "utf8") });
-    sections.push("Glossary");
-  }
 
   // Index (table of contents)
   const indexMd = buildIndexMarkdown(
     config.appName,
-    crossCutting.product_overview,
-    journeyContents.map((j) => ({ title: j.title, slug: j.slug })),
-    hasGlossary,
+    config.appUrl,
+    overview,
+    featureContents.map(({ content, feature }) => ({
+      title: content.title,
+      slug: feature.slug,
+      description: content.intro.split(".")[0] + ".",
+    })),
   );
   await uploadFile("documents", `${basePath}/index.md`, indexMd, "text/markdown");
   mdFiles.push({ path: "docs/index.md", content: Buffer.from(indexMd, "utf8") });
@@ -742,7 +600,7 @@ export async function runMarkdownGenerator(
   console.log(`\n[md-gen] === Markdown Documentation Complete ===`);
   console.log(`[md-gen] Sections: ${sections.length}`);
   console.log(`[md-gen] Screenshots: ${screenshotCount}`);
-  console.log(`[md-gen] Journey guides: ${journeyContents.length}`);
+  console.log(`[md-gen] Feature pages: ${featureContents.length}`);
   console.log(`[md-gen] Zip size: ${(zipBuffer.length / 1024).toFixed(1)} KB`);
   console.log(`[md-gen] Duration: ${durationSeconds}s`);
 

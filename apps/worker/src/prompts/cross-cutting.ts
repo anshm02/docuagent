@@ -1,37 +1,28 @@
 import type { PRDSummary } from "@docuagent/shared";
 
-export function crossCuttingPrompt(opts: {
+export function overviewPrompt(opts: {
   appName: string;
-  screenIndex: { pageTitle: string; purpose: string; navigationPath: string }[];
+  appUrl: string;
+  featureList: { name: string; slug: string; description: string }[];
   prdSummary: PRDSummary | null;
 }): string {
-  return `Generate cross-cutting documentation content for "${opts.appName}".
+  return `Generate a product overview for the "${opts.appName}" documentation index page.
 
-ALL SCREENS IN THE APP:
-${JSON.stringify(opts.screenIndex, null, 2)}
+APP URL: ${opts.appUrl}
+
+FEATURES DOCUMENTED:
+${JSON.stringify(opts.featureList, null, 2)}
 
 ${opts.prdSummary ? `PRODUCT CONTEXT (from PRD):\n${JSON.stringify(opts.prdSummary, null, 2)}` : ""}
 
 Return a JSON object:
 {
-  "quick_start_steps": [
-    "string — 5 steps max. Each step is ONE action. Bold UI elements with **double asterisks**."
-  ],
-  "navigation_description": "string — 2-3 sentences describing the app layout (sidebar, top nav, main content). Concise.",
-  "glossary": [
-    {
-      "term": "string — key term",
-      "definition": "string — 1 sentence definition for end-users"
-    }
-  ],
-  "product_overview": "string — 2-3 sentences about what the product does and who it's for. Use PRD context if available."
+  "product_overview": "string — 2-3 sentences about what the product does and who it's for. Professional tone. Use PRD context if available."
 }
 
 RULES:
-- quick_start_steps: exactly 5 steps. First step is always login. Last step should be a core action.
-- navigation_description: describe ONLY what's visible. No speculation.
-- glossary: include terms from PRD terminology if available. Only include terms that genuinely need defining. If nothing needs defining, return empty array.
-- product_overview: use PRD product_purpose and target_users if available. Professional tone.
+- Focus on what the product does and who benefits
+- Professional, concise tone
 - BANNED phrases: "This page displays", "You'll see", "Here you can", "This is designed to"
 
 Return ONLY valid JSON. No markdown, no explanation, no backticks.`;

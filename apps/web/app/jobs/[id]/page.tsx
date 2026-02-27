@@ -46,11 +46,11 @@ interface JobData {
     total_screens: number;
     avg_confidence: number;
     duration_seconds: number;
-    journeys_completed: number;
-    journeys_total: number;
+    features_documented: number;
+    features_total: number;
     estimated_cost_cents: number;
     actual_cost_cents: number;
-    additional_journeys?: { title: string; description: string }[];
+    additional_features?: { title: string; description: string }[];
   } | null;
   error: string | null;
   started_at: string | null;
@@ -64,7 +64,7 @@ const STATUS_STEPS = [
   { key: "analyzing_code", label: "Analyzing Code" },
   { key: "analyzing_prd", label: "Analyzing PRD" },
   { key: "discovering", label: "Discovering Pages" },
-  { key: "planning_journeys", label: "Planning Journeys" },
+  { key: "planning_journeys", label: "Selecting Features" },
   { key: "crawling", label: "Crawling App" },
   { key: "analyzing_screens", label: "Analyzing Screens" },
   { key: "generating_docs", label: "Generating Docs" },
@@ -219,9 +219,9 @@ export default function JobStatusPage() {
                 <GlassCard className="p-4 text-center">
                   <Route className="w-4 h-4 text-blue-400 mx-auto mb-1" />
                   <p className="text-xl font-bold text-white">
-                    {job.result.journeys_completed}/{job.result.journeys_total}
+                    {job.result.features_documented}/{job.result.features_total}
                   </p>
-                  <p className="text-[10px] text-gray-500">Journeys</p>
+                  <p className="text-[10px] text-gray-500">Features</p>
                 </GlassCard>
                 <GlassCard className="p-4 text-center">
                   <Award className="w-4 h-4 text-blue-400 mx-auto mb-1" />
@@ -260,12 +260,12 @@ export default function JobStatusPage() {
                 )}
               </div>
 
-              {/* Additional journeys upsell */}
-              {job.result.additional_journeys &&
-                job.result.additional_journeys.length > 0 && (
+              {/* Additional features upsell */}
+              {job.result.additional_features &&
+                job.result.additional_features.length > 0 && (
                   <GlassCard className="p-4">
                     <p className="text-sm text-gray-400">
-                      {job.result.additional_journeys.length} more journeys
+                      {job.result.additional_features.length} more features
                       available \u2014 upgrade for full documentation
                     </p>
                   </GlassCard>

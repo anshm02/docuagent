@@ -1,15 +1,14 @@
 // ============================================================
-// DocuAgent — Pipeline Orchestrator (V2)
-// Coordinates all stages for a given job ID
+// DocuAgent — Pipeline Orchestrator (Feature-based)
 // Pipeline: code analysis → PRD analysis → login + discovery →
-//   cost estimation + journey planning → crawl → screen analysis → doc generation
+//   feature selection → feature crawl → screen analysis → doc generation
 // ============================================================
 
 import { getSupabase } from "./lib/supabase.js";
 import { runCodeAnalysis } from "./engines/code-analysis.js";
 import { runPrdAnalysis } from "./engines/prd-analysis.js";
 import { runDiscoveryCrawl } from "./engines/discovery-crawl.js";
-import { runJourneyPlanner } from "./engines/journey-planner.js";
+import { selectFeatures } from "./engines/feature-planner.js";
 import { runCrawl, findLoginPage, detectAppName } from "./engines/crawl.js";
 import { runScreenAnalysis } from "./engines/screen-analysis.js";
 import { runMarkdownGenerator } from "./engines/markdown-generator.js";
@@ -26,10 +25,10 @@ import type {
   JobStatus,
   CrawlPlan,
   PRDSummary,
-  Journey,
+  Feature,
   DiscoveryResult,
   CostEstimate,
-  JourneyPlanResult,
+  FeatureSelectionResult,
 } from "@docuagent/shared";
 import { PAGE_TIMEOUT_MS } from "@docuagent/shared";
 
@@ -41,7 +40,7 @@ const STAGE_ORDER: JobStatus[] = [
   "analyzing_code",
   "analyzing_prd",
   "discovering",
-  "planning_journeys",
+  "planning_journeys", // DB constraint uses planning_journeys; this is the feature selection stage
   "crawling",
   "analyzing_screens",
   "generating_docs",
@@ -175,22 +174,22 @@ function buildDiscoverySummary(results: DiscoveryResult[]): string {
   return lines.join("\n");
 }
 
-function buildJourneyPlanSummary(
-  planResult: JourneyPlanResult,
+function buildFeatureSelectionSummary(
+  selectionResult: FeatureSelectionResult,
   costEstimate: CostEstimate,
 ): string {
   const lines = [
-    `Documentation Plan — ${planResult.planned.length} journeys within ${formatCostCents(costEstimate.estimated_cost_cents)} budget:`,
+    `Selected ${selectionResult.selected.length} features to document (budget: ${formatCostCents(costEstimate.estimated_cost_cents)}):`,
   ];
-  for (let i = 0; i < planResult.planned.length; i++) {
-    const j = planResult.planned[i];
-    lines.push(`  ${i + 1}. ${j.title} (${j.steps.length} steps) — ${j.description}`);
+  for (let i = 0; i < selectionResult.selected.length; i++) {
+    const f = selectionResult.selected[i];
+    lines.push(`  ${i + 1}. ${f.name} (${f.route}) ${f.hasForm ? "[has form]" : ""}`);
   }
-  if (costEstimate.journeys_cut_for_budget > 0) {
-    lines.push(`  Note: ${costEstimate.journeys_cut_for_budget} additional journeys available with more credits`);
+  if (costEstimate.features_cut_for_budget > 0) {
+    lines.push(`  Note: ${costEstimate.features_cut_for_budget} additional features available with more credits`);
   }
-  if (planResult.additional.length > 0) {
-    lines.push(`  Available with upgrade: ${planResult.additional.map((a) => a.title).join(", ")}`);
+  if (selectionResult.additional.length > 0) {
+    lines.push(`  Available with upgrade: ${selectionResult.additional.map((a) => a.title).join(", ")}`);
   }
   return lines.join("\n");
 }
@@ -243,8 +242,8 @@ export async function runPipeline(jobId: string): Promise<void> {
     terminology: [],
   };
   let discoveryResults: DiscoveryResult[] = [];
-  let journeys: Journey[] = [];
-  let additionalJourneys: { title: string; description: string }[] = [];
+  let features: Feature[] = [];
+  let additionalFeatures: { title: string; description: string }[] = [];
   let costEstimate: CostEstimate | null = null;
   let screensCaptured = 0;
   let hadPrd = false;
@@ -261,14 +260,11 @@ export async function runPipeline(jobId: string): Promise<void> {
       crawlPlan = await runCodeAnalysis(typedJob.github_repo_url);
       console.log(`[orchestrator] Code analysis complete: ${crawlPlan.framework}, ${crawlPlan.routes.length} routes`);
 
-      // Build and broadcast code analysis summary
       const codeAnalysisSummary = typedJob.github_repo_url
         ? buildCodeAnalysisSummary(crawlPlan)
         : "No codebase provided. Connect GitHub to get field validation rules, permission details, and richer documentation.";
 
       await broadcastProgress(jobId, "info", codeAnalysisSummary);
-
-      // Store summary on job record
       await supabase
         .from("jobs")
         .update({ code_analysis_summary: codeAnalysisSummary })
@@ -298,11 +294,8 @@ export async function runPipeline(jobId: string): Promise<void> {
       });
       console.log(`[orchestrator] PRD analysis complete: ${prdSummary.product_name}`);
 
-      // Build and broadcast PRD analysis summary
       const prdAnalysisSummary = buildPrdAnalysisSummary(prdSummary, hadPrd);
       await broadcastProgress(jobId, "info", prdAnalysisSummary);
-
-      // Store summary on job record
       await supabase
         .from("jobs")
         .update({ prd_analysis_summary: prdAnalysisSummary })
@@ -322,7 +315,7 @@ export async function runPipeline(jobId: string): Promise<void> {
     // Stage 3: Login + Discovery Crawl
     // ═════════════════════════════════════════════════
     await updateJobStatus(jobId, "discovering");
-    await broadcastProgress(jobId, "info", "Initializing browser for discovery...");
+    await broadcastProgress(jobId, "info", "Discovering app features...");
 
     console.log("[orchestrator] Initializing Stagehand for discovery...");
     const { stagehand, page } = await initStagehand();
@@ -400,8 +393,19 @@ export async function runPipeline(jobId: string): Promise<void> {
             }
           }
         }
+
+        // Verify login actually succeeded (post-loop check)
+        const postLoginUrl = page.url();
+        const loginPatterns = ["/login", "/sign-in", "/signin", "/sign-up", "/signup", "/auth"];
+        const stillOnLoginPage = loginPatterns.some((p) => postLoginUrl.toLowerCase().includes(p));
+        if (stillOnLoginPage) {
+          console.error(`[orchestrator] Login loop completed but still on login page: ${postLoginUrl}`);
+          await closeStagehand();
+          await failJob(jobId, "Login failed — still on login page after 2 attempts. Check your credentials and login URL.");
+          await deleteCredentials(jobId);
+          return;
+        }
       } else if (!hasCredentials) {
-        // No login required — navigate to app URL
         await page.goto(typedJob.app_url, {
           waitUntil: "networkidle",
           timeoutMs: PAGE_TIMEOUT_MS,
@@ -409,10 +413,9 @@ export async function runPipeline(jobId: string): Promise<void> {
         await waitForSettle(page);
       }
 
-      // Detect app name (2E)
+      // Detect app name
       if (!appName) {
         appName = await detectAppName(stagehand, page, typedJob.product_description);
-        // Store on job record
         await supabase.from("jobs").update({ app_name: appName }).eq("id", jobId);
         console.log(`[orchestrator] App name: "${appName}"`);
       }
@@ -444,64 +447,59 @@ export async function runPipeline(jobId: string): Promise<void> {
     await deleteCredentials(jobId);
 
     // ═════════════════════════════════════════════════
-    // Stage 4: Cost Estimation + Journey Planning
+    // Stage 4: Feature Selection + Cost Estimation
     // ═════════════════════════════════════════════════
     await updateJobStatus(jobId, "planning_journeys");
-    await broadcastProgress(jobId, "info", "Planning user journeys...");
+    await broadcastProgress(jobId, "info", "Selecting features to document...");
 
-    // Estimate how many journeys we can afford
+    // Count accessible pages as potential features
     const accessiblePages = discoveryResults.filter((r) => r.isAccessible && !r.hasError);
-    // Rough estimate: possible journeys = accessible pages / 3 (avg 3 pages per journey)
-    const estimatedPossibleJourneys = Math.max(1, Math.ceil(accessiblePages.length / 3));
 
-    costEstimate = estimateCost(discoveryResults, estimatedPossibleJourneys, userCredits);
+    costEstimate = estimateCost(discoveryResults, accessiblePages.length, userCredits);
     await storeEstimatedCost(jobId, costEstimate.estimated_cost_cents);
 
     // Broadcast budget info
-    const budgetMsg = `Budget: ${formatCostCents(userCredits)} available. Estimating ${formatCostCents(costEstimate.estimated_cost_cents)} for ${costEstimate.journeys_planned} journeys (${costEstimate.screens_estimated} screens).`;
+    const budgetMsg = `Budget: ${formatCostCents(userCredits)} available. Estimating ${formatCostCents(costEstimate.estimated_cost_cents)} for ${costEstimate.features_planned} features (${costEstimate.screens_estimated} screens).`;
     console.log(`[orchestrator] ${budgetMsg}`);
     await broadcastProgress(jobId, "info", budgetMsg);
 
-    try {
-      const planResult = await runJourneyPlanner(
-        crawlPlan,
-        prdSummary,
-        discoveryResults,
-        costEstimate.journeys_planned,
-      );
+    // Select features (simple — no AI call needed for small apps)
+    const selectionResult = selectFeatures(discoveryResults, costEstimate.features_planned);
+    features = selectionResult.selected;
+    additionalFeatures = selectionResult.additional;
 
-      journeys = planResult.planned;
-      additionalJourneys = planResult.additional;
+    // Recalculate cost estimate with actual feature count
+    costEstimate = estimateCost(
+      discoveryResults,
+      features.length + additionalFeatures.length,
+      userCredits,
+    );
 
-      // Recalculate cost estimate with actual journey count
-      costEstimate = estimateCost(
-        discoveryResults,
-        journeys.length + additionalJourneys.length,
-        userCredits,
-      );
+    console.log(`[orchestrator] Feature selection complete: ${features.length} selected, ${additionalFeatures.length} additional`);
 
-      console.log(`[orchestrator] Journey planning complete: ${journeys.length} planned, ${additionalJourneys.length} additional`);
+    // Broadcast feature selection summary
+    const selectionSummary = buildFeatureSelectionSummary(selectionResult, costEstimate);
+    await broadcastProgress(jobId, "info", selectionSummary);
 
-      // Broadcast journey plan summary
-      const planSummary = buildJourneyPlanSummary(planResult, costEstimate);
-      await broadcastProgress(jobId, "info", planSummary);
+    // Build feature names list for broadcast
+    const featureNames = features.map((f) => f.name).join(", ");
+    await broadcastProgress(
+      jobId,
+      "info",
+      `Selected ${features.length} features to document: ${featureNames}`,
+    );
 
-      // Store journeys in job record
-      await supabase
-        .from("jobs")
-        .update({ journeys })
-        .eq("id", jobId);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("[orchestrator] Journey planning failed (non-fatal):", msg);
-      await broadcastProgress(jobId, "info", "Journey planning failed, will discover navigation via browser");
-    }
+    // Store features in job record
+    await supabase
+      .from("jobs")
+      .update({ journeys: features })
+      .eq("id", jobId);
 
     // ═════════════════════════════════════════════════
-    // Stage 5: Crawl Execution
+    // Stage 5: Feature Crawl
     // ═════════════════════════════════════════════════
     await updateJobStatus(jobId, "crawling");
-    await broadcastProgress(jobId, "info", "Crawling application...");
+    await broadcastProgress(jobId, "info", "Crawling application features...");
 
     try {
       const crawlResult = await runCrawl({
@@ -509,7 +507,7 @@ export async function runPipeline(jobId: string): Promise<void> {
         appUrl: typedJob.app_url,
         loginUrl: typedJob.login_url ?? loginUrl ?? undefined,
         credentials: typedJob.credentials ?? undefined,
-        journeys,
+        features,
         crawlPlan,
         maxScreens: typedJob.config?.max_screens,
       });
@@ -517,7 +515,6 @@ export async function runPipeline(jobId: string): Promise<void> {
       screensCaptured = crawlResult.screens.length;
       console.log(`[orchestrator] Crawl complete: ${screensCaptured} screens, ${crawlResult.errors.length} errors`);
 
-      // Update progress
       await supabase
         .from("jobs")
         .update({
@@ -532,7 +529,6 @@ export async function runPipeline(jobId: string): Promise<void> {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[orchestrator] Crawl failed:", msg);
 
-      // Check if we have enough screens for partial doc generation
       const { count } = await supabase
         .from("screens")
         .select("*", { count: "exact", head: true })
@@ -541,7 +537,7 @@ export async function runPipeline(jobId: string): Promise<void> {
 
       screensCaptured = count ?? 0;
 
-      if (screensCaptured < 3) {
+      if (screensCaptured < 2) {
         await failJob(jobId, `Crawl failed with only ${screensCaptured} screens captured: ${msg}`);
         return;
       }
@@ -551,7 +547,7 @@ export async function runPipeline(jobId: string): Promise<void> {
     }
 
     // Check minimum screens
-    if (screensCaptured < 3) {
+    if (screensCaptured < 2) {
       const { count } = await supabase
         .from("screens")
         .select("*", { count: "exact", head: true })
@@ -560,8 +556,8 @@ export async function runPipeline(jobId: string): Promise<void> {
 
       screensCaptured = count ?? 0;
 
-      if (screensCaptured < 3) {
-        await failJob(jobId, `Only ${screensCaptured} screens captured, need at least 3 for document generation`);
+      if (screensCaptured < 2) {
+        await failJob(jobId, `Only ${screensCaptured} screens captured, need at least 2 for document generation`);
         return;
       }
     }
@@ -577,7 +573,7 @@ export async function runPipeline(jobId: string): Promise<void> {
         jobId,
         appName,
         prdSummary,
-        journeys: journeys.map((j) => ({ id: j.id, title: j.title, description: j.description })),
+        features: features.map((f) => ({ id: f.id, name: f.name, slug: f.slug, description: f.description })),
       });
 
       console.log(`[orchestrator] Screen analysis complete: ${analysisResult.analyzedScreens}/${analysisResult.totalScreens}, quality: ${analysisResult.qualityScore}%`);
@@ -585,7 +581,6 @@ export async function runPipeline(jobId: string): Promise<void> {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[orchestrator] Screen analysis failed:", msg);
       await broadcastProgress(jobId, "error", `Screen analysis failed: ${msg}`);
-      // Continue to doc generation with whatever analysis we have
     }
 
     // ═════════════════════════════════════════════════
@@ -598,11 +593,12 @@ export async function runPipeline(jobId: string): Promise<void> {
       const mdResult = await runMarkdownGenerator({
         jobId,
         appName,
+        appUrl: typedJob.app_url,
         prdSummary,
-        journeys,
+        features,
       });
 
-      // Calculate actual cost (rough estimate based on API calls made)
+      // Calculate actual cost
       const actualCostCents = costEstimate?.estimated_cost_cents ?? 100;
 
       // Deduct credits
@@ -610,7 +606,6 @@ export async function runPipeline(jobId: string): Promise<void> {
 
       // Update job with final result
       const totalDurationSeconds = Math.round((Date.now() - startTime) / 1000);
-      const journeysCompleted = journeys.length;
 
       await supabase
         .from("jobs")
@@ -622,11 +617,11 @@ export async function runPipeline(jobId: string): Promise<void> {
             total_screens: mdResult.totalScreens,
             avg_confidence: mdResult.avgConfidence,
             duration_seconds: totalDurationSeconds,
-            journeys_completed: journeysCompleted,
-            journeys_total: journeys.length + additionalJourneys.length,
+            features_documented: features.length,
+            features_total: features.length + additionalFeatures.length,
             estimated_cost_cents: costEstimate?.estimated_cost_cents ?? 0,
             actual_cost_cents: actualCostCents,
-            additional_journeys: additionalJourneys,
+            additional_features: additionalFeatures,
           },
           completed_at: new Date().toISOString(),
         })
@@ -655,7 +650,6 @@ export async function runPipeline(jobId: string): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await failJob(jobId, `Pipeline error: ${msg}`);
-    // Ensure credentials are cleaned up even on unexpected errors
     await deleteCredentials(jobId);
   }
 }
