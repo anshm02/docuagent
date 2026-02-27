@@ -16,9 +16,7 @@ import {
   Sparkles,
   Monitor,
   Route,
-  Award,
   ClipboardList,
-  CheckCircle,
 } from "lucide-react";
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_URL!;
@@ -119,9 +117,10 @@ export default function JobStatusPage() {
       setJob(data);
 
       // Get the latest message for the agent activity display
+      // API returns messages ordered by created_at DESC, so index 0 is the newest
       if (data.progress_messages && data.progress_messages.length > 0) {
-        const msgs = [...data.progress_messages];
-        const latest = msgs[msgs.length - 1];
+        const latest = data.progress_messages[0];
+        console.log("[agent-activity] poll received", data.progress_messages.length, "messages. Latest:", latest?.message);
         if (latest) setLatestMessage(latest.message);
       }
     } catch {
@@ -151,6 +150,7 @@ export default function JobStatusPage() {
         },
         (payload) => {
           const msg = payload.new as ProgressMessage;
+          console.log("[agent-activity] realtime message:", msg.message);
           setLatestMessage(msg.message);
         }
       )
@@ -234,7 +234,7 @@ export default function JobStatusPage() {
           {isCompleted && job.result && (
             <>
               {/* Stats grid */}
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 gap-3">
                 <GlassCard className="p-4 text-center">
                   <Monitor className="w-4 h-4 text-blue-400 mx-auto mb-1" />
                   <p className="text-xl font-bold text-white">
@@ -248,13 +248,6 @@ export default function JobStatusPage() {
                     {job.result.features_documented ?? 0}/{job.result.features_total ?? 0}
                   </p>
                   <p className="text-[10px] text-gray-500">Features</p>
-                </GlassCard>
-                <GlassCard className="p-4 text-center">
-                  <Award className="w-4 h-4 text-blue-400 mx-auto mb-1" />
-                  <p className="text-xl font-bold text-white">
-                    {job.quality_score ?? 0}%
-                  </p>
-                  <p className="text-[10px] text-gray-500">Quality</p>
                 </GlassCard>
               </div>
 
@@ -380,9 +373,9 @@ export default function JobStatusPage() {
                   return (
                     <div key={feature.id} className="flex items-center gap-2 text-sm">
                       {isDone ? (
-                        <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                        <span className="text-emerald-400 font-medium flex-shrink-0 w-4 text-center">&#10003;</span>
                       ) : (
-                        <span className="text-base leading-none">📋</span>
+                        <span className="text-gray-500 flex-shrink-0 w-4 text-center">&mdash;</span>
                       )}
                       <span className={isDone ? "text-gray-300" : "text-gray-400"}>
                         {feature.name}

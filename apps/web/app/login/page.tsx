@@ -1,7 +1,6 @@
 "use client";
 
 import { createClient } from "@/lib/supabase/client";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState, Suspense } from "react";
 import { ArrowLeft, Eye, EyeOff } from "lucide-react";
@@ -73,13 +72,13 @@ function LoginForm() {
     <div className="min-h-screen bg-[#0a0b14] flex flex-col">
       {/* Back link */}
       <div className="p-6">
-        <Link
-          href="/"
+        <button
+          onClick={() => router.push("/")}
           className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-300 transition-colors"
         >
           <ArrowLeft className="w-4 h-4" />
           Back
-        </Link>
+        </button>
       </div>
 
       {/* Centered form */}

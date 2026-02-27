@@ -338,7 +338,16 @@ export default function DocsViewerPage() {
             ))}
           </nav>
 
-          {/* Additional features upsell */}
+          {/* Beta preview note */}
+          <div className="mt-6 pt-4 border-t border-white/5">
+            <p className="text-xs text-gray-500 italic px-3 leading-relaxed">
+              Beta Preview — This run documented your app&apos;s core features.
+              The full version will cover every page, including nested views and
+              multi-step workflows.
+            </p>
+          </div>
+
+          {/* Additional features - full version */}
           {job?.result?.additional_features &&
             job.result.additional_features.length > 0 && (
               <div className="mt-6 pt-4 border-t border-white/5">
