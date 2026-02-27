@@ -165,6 +165,25 @@ export default function NewJobPage() {
       <Navbar />
 
       <main className="flex-1 flex flex-col items-center px-4 pt-8 pb-24">
+        {credits !== null && credits <= 0 ? (
+          <div className="w-full max-w-lg flex-1 flex items-center justify-center">
+            <div className="text-center">
+              <div className="w-14 h-14 rounded-full bg-gray-600/10 border border-gray-500/20 flex items-center justify-center mx-auto mb-4">
+                <FileText className="w-7 h-7 text-gray-400" />
+              </div>
+              <h1 className="text-2xl font-bold text-white mb-2">
+                Free run used
+              </h1>
+              <p className="text-gray-400 text-sm max-w-xs mx-auto">
+                You&apos;ve used your free documentation run. Contact us at{" "}
+                <a href="mailto:hello@docuagent.dev" className="text-blue-400 hover:text-blue-300">
+                  hello@docuagent.dev
+                </a>{" "}
+                for additional runs.
+              </p>
+            </div>
+          </div>
+        ) : (
         <div className="w-full max-w-lg">
           {/* Step indicator */}
           <div className="mb-8">
@@ -383,17 +402,15 @@ export default function NewJobPage() {
                 </div>
               </div>
 
-              {credits !== null && (
-                <p className="text-xs text-gray-500">
-                  Credits remaining: ${(credits / 100).toFixed(2)}
-                </p>
-              )}
+              {/* Credits display removed - simplified to "1 free run" model */}
             </div>
           )}
         </div>
+        )}
       </main>
 
-      {/* Bottom nav bar */}
+      {/* Bottom nav bar - hidden when credits exhausted */}
+      {!(credits !== null && credits <= 0) && (
       <div className="fixed bottom-0 left-0 right-0 border-t border-white/5 bg-[#0a0b14]/95 backdrop-blur-md">
         <div className="max-w-lg mx-auto px-6 py-4 flex items-center justify-between">
           <button
@@ -435,6 +452,7 @@ export default function NewJobPage() {
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }

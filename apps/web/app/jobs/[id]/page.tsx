@@ -17,7 +17,8 @@ import {
   Monitor,
   Route,
   Award,
-  DollarSign,
+  ClipboardList,
+  CheckCircle,
 } from "lucide-react";
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_URL!;
@@ -27,6 +28,16 @@ interface ProgressMessage {
   message: string;
   screenshot_url: string | null;
   created_at: string;
+}
+
+interface Feature {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  route: string;
+  hasForm: boolean;
+  priority: number;
 }
 
 interface JobData {
@@ -40,6 +51,7 @@ interface JobData {
     current_step?: string;
   };
   quality_score: number | null;
+  journeys: Feature[] | null;
   result: {
     docs_url: string;
     zip_url: string;
@@ -63,9 +75,9 @@ const STATUS_STEPS = [
   { key: "queued", label: "Queued" },
   { key: "analyzing_code", label: "Analyzing Code" },
   { key: "analyzing_prd", label: "Analyzing PRD" },
-  { key: "discovering", label: "Discovering Pages" },
+  { key: "discovering", label: "Discovering Features" },
   { key: "planning_journeys", label: "Selecting Features" },
-  { key: "crawling", label: "Crawling App" },
+  { key: "crawling", label: "Documenting Features" },
   { key: "analyzing_screens", label: "Analyzing Screens" },
   { key: "generating_docs", label: "Generating Docs" },
   { key: "completed", label: "Completed" },
@@ -74,6 +86,20 @@ const STATUS_STEPS = [
 function getStatusIndex(status: string): number {
   const idx = STATUS_STEPS.findIndex((s) => s.key === status);
   return idx === -1 ? 0 : idx;
+}
+
+function getAppDisplayName(job: JobData): string {
+  if (job.app_name) return job.app_name;
+  try {
+    const url = new URL(job.app_url);
+    const hostname = url.hostname.replace(/^www\./, "");
+    if (hostname === "localhost" || hostname === "127.0.0.1") {
+      return url.host; // include port for localhost
+    }
+    return hostname;
+  } catch {
+    return job.app_url;
+  }
 }
 
 export default function JobStatusPage() {
@@ -197,7 +223,7 @@ export default function JobStatusPage() {
             </h1>
             <p className="text-gray-400 text-sm mt-1">
               {isCompleted
-                ? `${job.app_name || new URL(job.app_url).hostname}`
+                ? getAppDisplayName(job)
                 : isFailed
                   ? job.error || "An error occurred during generation"
                   : "This will take a few minutes"}
@@ -208,7 +234,7 @@ export default function JobStatusPage() {
           {isCompleted && job.result && (
             <>
               {/* Stats grid */}
-              <div className="grid grid-cols-4 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <GlassCard className="p-4 text-center">
                   <Monitor className="w-4 h-4 text-blue-400 mx-auto mb-1" />
                   <p className="text-xl font-bold text-white">
@@ -219,23 +245,16 @@ export default function JobStatusPage() {
                 <GlassCard className="p-4 text-center">
                   <Route className="w-4 h-4 text-blue-400 mx-auto mb-1" />
                   <p className="text-xl font-bold text-white">
-                    {job.result.features_documented}/{job.result.features_total}
+                    {job.result.features_documented ?? 0}/{job.result.features_total ?? 0}
                   </p>
                   <p className="text-[10px] text-gray-500">Features</p>
                 </GlassCard>
                 <GlassCard className="p-4 text-center">
                   <Award className="w-4 h-4 text-blue-400 mx-auto mb-1" />
                   <p className="text-xl font-bold text-white">
-                    {job.quality_score ?? "\u2014"}%
+                    {job.quality_score ?? 0}%
                   </p>
                   <p className="text-[10px] text-gray-500">Quality</p>
-                </GlassCard>
-                <GlassCard className="p-4 text-center">
-                  <DollarSign className="w-4 h-4 text-blue-400 mx-auto mb-1" />
-                  <p className="text-xl font-bold text-white">
-                    ${((job.result.actual_cost_cents ?? 0) / 100).toFixed(2)}
-                  </p>
-                  <p className="text-[10px] text-gray-500">Cost</p>
                 </GlassCard>
               </div>
 
@@ -260,14 +279,21 @@ export default function JobStatusPage() {
                 )}
               </div>
 
-              {/* Additional features upsell */}
+              {/* Additional features */}
               {job.result.additional_features &&
                 job.result.additional_features.length > 0 && (
                   <GlassCard className="p-4">
-                    <p className="text-sm text-gray-400">
-                      {job.result.additional_features.length} more features
-                      available \u2014 upgrade for full documentation
+                    <p className="text-sm text-gray-400 mb-3">
+                      These features will also be documented in the full version:
                     </p>
+                    <ul className="space-y-1.5">
+                      {job.result.additional_features.map((f, i) => (
+                        <li key={i} className="flex items-center gap-2 text-sm text-gray-500">
+                          <ClipboardList className="w-3.5 h-3.5 flex-shrink-0" />
+                          {f.title}
+                        </li>
+                      ))}
+                    </ul>
                   </GlassCard>
                 )}
             </>
@@ -331,6 +357,50 @@ export default function JobStatusPage() {
                   );
                 })}
               </div>
+            </GlassCard>
+          )}
+
+          {/* Feature list card - show after discovery */}
+          {isRunning && job.journeys && job.journeys.length > 0 && (
+            <GlassCard className="p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <ClipboardList className="w-4 h-4 text-blue-400" />
+                <span className="text-sm font-medium text-gray-200">
+                  Features to Document
+                </span>
+              </div>
+              <div className="space-y-1.5">
+                {job.journeys.map((feature) => {
+                  const isDone = latestMessage.includes(`Completed feature: ${feature.name}`) ||
+                    latestMessage.includes(`feature "${feature.name}" complete`) ||
+                    (job.progress_messages ?? []).some(
+                      (m) => m.message.includes(`Completed feature: ${feature.name}`) ||
+                             m.message.includes(`feature "${feature.name}" complete`)
+                    );
+                  return (
+                    <div key={feature.id} className="flex items-center gap-2 text-sm">
+                      {isDone ? (
+                        <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                      ) : (
+                        <span className="text-base leading-none">📋</span>
+                      )}
+                      <span className={isDone ? "text-gray-300" : "text-gray-400"}>
+                        {feature.name}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              {job.result?.additional_features && job.result.additional_features.length > 0 && (
+                <div className="mt-3 pt-3 border-t border-white/5">
+                  <p className="text-xs text-gray-500 mb-1.5">
+                    These will also be documented in the full version:
+                  </p>
+                  {job.result.additional_features.map((f, i) => (
+                    <p key={i} className="text-xs text-gray-600 ml-6">{f.title}</p>
+                  ))}
+                </div>
+              )}
             </GlassCard>
           )}
 

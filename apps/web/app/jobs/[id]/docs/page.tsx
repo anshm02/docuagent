@@ -344,7 +344,7 @@ export default function DocsViewerPage() {
               <div className="mt-6 pt-4 border-t border-white/5">
                 <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider px-3 mb-2 flex items-center gap-1">
                   <Lock className="w-3 h-3" />
-                  Available with upgrade
+                  Also in full version
                 </p>
                 {job.result.additional_features.map((f, i) => (
                   <div

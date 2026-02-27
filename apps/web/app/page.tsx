@@ -9,7 +9,7 @@ const features = [
     icon: Camera,
     title: "Automated Screenshots",
     description:
-      "DocuAgent navigates your application and captures high-quality screenshots at key moments in user journeys. No manual work required\u2014just provide your app URL and watch the magic happen.",
+      "DocuAgent navigates your application and captures high-quality screenshots at key moments in user journeys. No manual work required — just provide your app URL and watch the magic happen.",
   },
   {
     icon: FileText,
@@ -27,7 +27,7 @@ const features = [
     icon: Code,
     title: "MDX Export",
     description:
-      "Generated documentation is structured as clean MDX files, ready to integrate into your existing docs site. Includes images, formatted text, and proper hierarchy\u2014no conversion needed.",
+      "Generated documentation is structured as clean MDX files, ready to integrate into your existing docs site. Includes images, formatted text, and proper hierarchy — no conversion needed.",
   },
 ];
 
@@ -76,14 +76,19 @@ export default function LandingPage() {
             Provide your app URL and let AI handle the rest.
           </p>
 
-          <div className="mt-8 flex items-center justify-center gap-4">
-            <Link href="/login" className="btn-primary text-sm">
-              Try for free
-              <span aria-hidden="true">&rarr;</span>
-            </Link>
-            <Link href="#how-it-works" className="btn-ghost text-sm">
-              Contact us
-            </Link>
+          <div className="mt-8 flex flex-col items-center gap-3">
+            <div className="flex items-center gap-4">
+              <Link href="/login" className="btn-primary text-sm">
+                Try for free
+                <span aria-hidden="true">&rarr;</span>
+              </Link>
+              <Link href="#how-it-works" className="btn-ghost text-sm">
+                Contact us
+              </Link>
+            </div>
+            <p className="text-xs text-gray-500">
+              One free documentation run &middot; No credit card required
+            </p>
           </div>
         </div>
 
