@@ -188,15 +188,24 @@ function detectAppNameFromTitles(candidates: DiscoveryResult[]): string {
 export function selectFeatures(
   discoveryResults: DiscoveryResult[],
   maxFeatures: number,
+  postLoginRoute?: string,
 ): FeatureSelectionResult {
   console.log("[feature-planner] Selecting features from discovery results...");
   console.log(`[feature-planner]   Discovery pages: ${discoveryResults.length}`);
   console.log(`[feature-planner]   Budget: max ${maxFeatures} features`);
 
+  // Normalize post-login route for comparison
+  const normalizedPostLoginRoute = postLoginRoute?.replace(/\/$/, "") || undefined;
+
   // Filter to only accessible, non-error, authenticated pages
+  // Exception: the post-login landing page is never excluded
   const candidates = discoveryResults
     .filter((r) => r.isAccessible && !r.hasError)
-    .filter((r) => !shouldExcludeRoute(r.route));
+    .filter((r) => {
+      const normalizedRoute = r.route.replace(/\/$/, "") || "/";
+      if (normalizedPostLoginRoute && normalizedRoute === normalizedPostLoginRoute) return true;
+      return !shouldExcludeRoute(r.route);
+    });
 
   console.log(`[feature-planner]   Candidates after filtering: ${candidates.length}`);
 
@@ -242,7 +251,17 @@ export function selectFeatures(
       }
     }
 
-    const score = scoreFeature(r.route, r.pageTitle || "", r.hasForm, r.hasTable);
+    let score = scoreFeature(r.route, r.pageTitle || "", r.hasForm, r.hasTable);
+
+    // Post-login landing page gets highest priority — every user sees it first
+    if (postLoginRoute) {
+      const normalizedRoute = r.route.replace(/\/$/, "") || "/";
+      const normalizedPostLogin = postLoginRoute.replace(/\/$/, "") || "/";
+      if (normalizedRoute === normalizedPostLogin) {
+        score += 200;
+        console.log(`[feature-planner]   Homepage boost (+200) for ${r.route} (matches post-login URL)`);
+      }
+    }
 
     return {
       id: `feature-${idx + 1}`,
@@ -284,9 +303,65 @@ export function selectFeatures(
     uniqueFeatures.push(f);
   }
 
+  // --- Group features by parent category ---
+  // If multiple routes share the same parentCategory, merge them into ONE feature with subPages
+  const parentGroups = new Map<string, (Feature & { score: number })[]>();
+  const ungrouped: (Feature & { score: number })[] = [];
+
+  // Build parentCategory lookup from discoveryResults
+  const routeToParent = new Map<string, string>();
+  for (const dr of discoveryResults) {
+    if (dr.parentCategory) {
+      routeToParent.set(dr.route, dr.parentCategory);
+    }
+  }
+
+  for (const f of uniqueFeatures) {
+    const parent = routeToParent.get(f.route);
+    if (parent) {
+      if (!parentGroups.has(parent)) parentGroups.set(parent, []);
+      parentGroups.get(parent)!.push(f);
+    } else {
+      ungrouped.push(f);
+    }
+  }
+
+  // Merge grouped features
+  const mergedFeatures: (Feature & { score: number })[] = [];
+  for (const [parent, children] of parentGroups) {
+    if (children.length > 1) {
+      // Multiple children → group as one feature with subPages
+      const bestScore = Math.max(...children.map((c) => c.score));
+      const allHaveForms = children.some((c) => c.hasForm);
+      const parentSlug = slugify(parent);
+      const subPages = children.map((c) => ({ name: c.name, route: c.route }));
+
+      console.log(`[feature-planner]   Grouping "${parent}" with ${children.length} sub-pages: ${children.map((c) => c.name).join(", ")}`);
+
+      mergedFeatures.push({
+        id: `feature-group-${parentSlug}`,
+        name: parent,
+        slug: parentSlug,
+        description: `${parent} feature with ${children.length} sections`,
+        route: children[0].route, // primary route = first child
+        hasForm: allHaveForms,
+        priority: 0,
+        score: bestScore + 10, // Slight boost for grouped features (more content)
+        subPages,
+      });
+    } else {
+      // Single child with a parent — keep as-is (no grouping needed)
+      ungrouped.push(...children);
+    }
+  }
+
+  // Combine merged groups with ungrouped, sort by score
+  const allFeatures = [...mergedFeatures, ...ungrouped];
+  allFeatures.sort((a, b) => b.score - a.score);
+
   // Select top N features with score >= 0
-  const selectable = uniqueFeatures.filter((f) => f.score >= 0);
-  const lowScore = uniqueFeatures.filter((f) => f.score < 0 && f.score >= -50);
+  const selectable = allFeatures.filter((f) => f.score >= 0);
+  const lowScore = allFeatures.filter((f) => f.score < 0 && f.score >= -50);
 
   const selected: Feature[] = selectable.slice(0, maxFeatures).map(({ score: _score, ...rest }) => rest);
   const additionalFromSelectable = selectable.slice(maxFeatures);

@@ -232,6 +232,51 @@ async function extractNavLinks(page: Page, appUrl: string): Promise<string[]> {
   }
 }
 
+async function extractNavHierarchy(
+  page: Page,
+): Promise<{ parent: string; child: string; href: string }[]> {
+  try {
+    const structure = await page.evaluate(() => {
+      const d = (globalThis as any).document;
+      const results: { parent: string; child: string; href: string }[] = [];
+
+      // Look for nested nav patterns: <li> with sub-<ul>, expandable sections
+      const navSections = d.querySelectorAll(
+        "nav li, aside li, [class*='sidebar'] li, [class*='Sidebar'] li, [class*='nav'] > div",
+      );
+
+      navSections.forEach((section: any) => {
+        const subLinks = section.querySelectorAll(
+          "ul a, div[class*='sub'] a, [class*='dropdown'] a, [class*='Dropdown'] a",
+        );
+        if (subLinks.length > 0) {
+          // This section has children — extract parent text from the first non-link text element
+          const parentEl = section.querySelector(
+            ":scope > button, :scope > span, :scope > a, :scope > p, :scope > div > span, :scope > div > button",
+          );
+          const parentText = parentEl?.innerText?.trim() || "";
+          if (!parentText) return;
+
+          subLinks.forEach((link: any) => {
+            const href = link.getAttribute("href");
+            const text = link.innerText?.trim();
+            if (href && text && parentText && text !== parentText) {
+              results.push({ parent: parentText, child: text, href });
+            }
+          });
+        }
+      });
+
+      return results;
+    }) as { parent: string; child: string; href: string }[];
+
+    return structure;
+  } catch (err) {
+    console.error("[discovery] Failed to extract nav hierarchy:", err);
+    return [];
+  }
+}
+
 export async function runDiscoveryCrawl(config: DiscoveryCrawlConfig): Promise<DiscoveryResult[]> {
   const { jobId, page, appUrl, crawlPlan } = config;
   const results: DiscoveryResult[] = [];
@@ -255,15 +300,45 @@ export async function runDiscoveryCrawl(config: DiscoveryCrawlConfig): Promise<D
     await broadcastProgress(jobId, `Found ${routePaths.length} navigation links to explore`);
   }
 
+  // Extract sidebar hierarchy to detect parent-child grouping
+  const navHierarchy = await extractNavHierarchy(page);
+  if (navHierarchy.length > 0) {
+    console.log(`[discovery] Detected ${navHierarchy.length} parent-child nav relationships`);
+    for (const h of navHierarchy) {
+      console.log(`[discovery]   "${h.parent}" → "${h.child}" (${h.href})`);
+    }
+  }
+
+  // Build a map of route → parent category
+  const routeToParent = new Map<string, string>();
+  const baseHost = new URL(appUrl).host;
+  for (const h of navHierarchy) {
+    try {
+      const u = new URL(h.href, appUrl);
+      if (u.host === baseHost) {
+        routeToParent.set(u.pathname, h.parent);
+      }
+    } catch {
+      routeToParent.set(h.href, h.parent);
+    }
+  }
+
   for (let i = 0; i < routePaths.length; i++) {
     const routePath = routePaths[i];
     console.log(`[discovery] [${i + 1}/${routePaths.length}] Visiting: ${routePath}`);
 
     const result = await discoverRoute(page, jobId, appUrl, routePath);
+
+    // Attach parent category from nav hierarchy
+    const parentCategory = routeToParent.get(routePath);
+    if (parentCategory) {
+      result.parentCategory = parentCategory;
+    }
+
     results.push(result);
 
     const status = result.isAccessible
-      ? `accessible${result.hasForm ? ", has form" : ""}${result.hasTable ? ", has table" : ""}`
+      ? `accessible${result.hasForm ? ", has form" : ""}${result.hasTable ? ", has table" : ""}${parentCategory ? ` [parent: ${parentCategory}]` : ""}`
       : result.hasError
         ? "ERROR"
         : "inaccessible";

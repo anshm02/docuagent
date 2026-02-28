@@ -249,6 +249,7 @@ export async function runPipeline(jobId: string): Promise<void> {
   let appUnderstanding: AppUnderstanding | undefined;
   let hadPrd = false;
   let loginUrl: string | null | undefined = typedJob.login_url;
+  let postLoginRoute: string | undefined;
 
   try {
     // ═════════════════════════════════════════════════
@@ -414,6 +415,15 @@ export async function runPipeline(jobId: string): Promise<void> {
         await waitForSettle(page);
       }
 
+      // Capture post-login URL (the page the user lands on after authentication)
+      try {
+        const postLoginUrl = new URL(page.url());
+        postLoginRoute = postLoginUrl.pathname;
+        console.log(`[orchestrator] Post-login route: ${postLoginRoute}`);
+      } catch {
+        // URL parsing failed, skip
+      }
+
       // Detect app name
       if (!appName) {
         appName = await detectAppName(stagehand, page, typedJob.product_description);
@@ -465,7 +475,7 @@ export async function runPipeline(jobId: string): Promise<void> {
     await broadcastProgress(jobId, "info", budgetMsg);
 
     // Select features (simple — no AI call needed for small apps)
-    const selectionResult = selectFeatures(discoveryResults, costEstimate.features_planned);
+    const selectionResult = selectFeatures(discoveryResults, costEstimate.features_planned, postLoginRoute);
     features = selectionResult.selected;
     additionalFeatures = selectionResult.additional;
 

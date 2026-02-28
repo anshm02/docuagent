@@ -828,6 +828,9 @@ async function explorePage(
 ): Promise<PageUnderstanding> {
   console.log(`[crawl] Phase 1: Exploring "${feature.name}"...`);
 
+  // Rate limit protection: 3-second delay before exploration vision call
+  await new Promise((r) => setTimeout(r, 3000));
+
   const explorationPrompt = `Look at this screenshot of the "${feature.name}" page carefully.
 
 Tell me:
@@ -947,6 +950,9 @@ async function planDocumentationScreenshots(
   heroBase64: string,
 ): Promise<ScreenshotPlan[]> {
   console.log(`[crawl] Phase 2: Planning documentation screenshots for "${feature.name}"...`);
+
+  // Rate limit protection: 3-second delay before plan vision call
+  await new Promise((r) => setTimeout(r, 3000));
 
   const planPrompt = `You explored the "${feature.name}" page and learned:
 ${JSON.stringify(understanding, null, 2)}
@@ -1459,6 +1465,61 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
             connectedFeatures: twoPhaseResult.understanding.connected_features,
             screenshotDescriptions: twoPhaseResult.screenshotDescriptions,
           });
+        }
+
+        // --- Sub-pages: if this is a grouped feature, visit each additional sub-page ---
+        if (feature.subPages && feature.subPages.length > 1) {
+          // First sub-page was already crawled above (it's the primary route)
+          for (let si = 1; si < feature.subPages.length; si++) {
+            if (screens.length >= maxScreens) break;
+
+            const subPage = feature.subPages[si];
+            const subUrl = subPage.route.startsWith("http")
+              ? subPage.route
+              : `${config.appUrl.replace(/\/$/, "")}${subPage.route}`;
+
+            console.log(`[crawl] Sub-page: ${subPage.name} (${si + 1}/${feature.subPages.length})`);
+            await broadcastProgress(config.jobId, "info", `Capturing ${feature.name} — ${subPage.name}`);
+
+            try {
+              await page.goto(subUrl, { waitUntil: "networkidle", timeoutMs: PAGE_TIMEOUT_MS });
+              await waitForSettle(page);
+              await dismissOverlays(page, stagehand);
+              await waitForContentLoaded(page);
+              await page.evaluate(() => (globalThis as any).window.scrollTo(0, 0));
+              await new Promise((r) => setTimeout(r, 500));
+
+              const subSlug = `${feature.slug}-${subPage.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")}`;
+              const subResult = await captureScreen(page, config.jobId, {
+                featureId: feature.id,
+                featureSlug: feature.slug,
+                screenshotLabel: subPage.name,
+                navPath: `${feature.name} > ${subPage.name}`,
+                screenType: "page",
+                codeContext: null,
+                orderIndex,
+                broadcastLabel: `${feature.name} — ${subPage.name}`,
+                descriptiveFilename: `${subSlug}.png`,
+              });
+              if (subResult) {
+                screens.push(subResult.record);
+                orderIndex++;
+              }
+
+              // Run two-phase on sub-pages too (but simpler — share understanding)
+              if (screens.length < maxScreens) {
+                const subHero = await takeScreenshot(page);
+                const subTwoPhase = await twoPhaseFeatureCrawl(
+                  stagehand, page, { ...feature, name: subPage.name },
+                  config.jobId, null, subHero, orderIndex, subUrl,
+                );
+                screens.push(...subTwoPhase.screens);
+                orderIndex += subTwoPhase.screens.length;
+              }
+            } catch (err) {
+              console.log(`[crawl] Sub-page ${subPage.name} failed: ${err}`);
+            }
+          }
         }
 
         console.log(`[crawl] Feature "${feature.name}" complete`);

@@ -1,33 +1,33 @@
 "use client";
 
 import Link from "next/link";
-import { Camera, FileText, Map, Code, Sparkles, Mail } from "lucide-react";
+import { Camera, FileText, Search, Code, Sparkles, Mail } from "lucide-react";
 import { useState } from "react";
 
 const features = [
   {
+    icon: Search,
+    title: "Smart Feature Discovery",
+    description:
+      "The agent logs into your app, explores every page, and figures out which features matter most. It finds your dashboard, core workflows, and settings automatically so nothing important gets missed.",
+  },
+  {
     icon: Camera,
     title: "Automated Screenshots",
     description:
-      "DocuAgent navigates your application and captures high-quality screenshots at key moments in user journeys. No manual work required — just provide your app URL and watch the magic happen.",
+      "DocuAgent captures real screenshots of every feature it documents. Forms get filled with realistic sample data, modals get opened, and results get captured after actions. No manual clicking or screen recording on your end.",
   },
   {
     icon: FileText,
     title: "AI Documentation",
     description:
-      "Our AI analyzes your codebase and PRD to generate clear, comprehensive documentation. Each guide is tailored to your app\u2019s specific workflows and features, ensuring accuracy and relevance.",
-  },
-  {
-    icon: Map,
-    title: "User Journey Mapping",
-    description:
-      "The agent understands your application structure and automatically identifies the most important user flows. From authentication to core features, every critical path is documented.",
+      "Each feature gets a clear, focused guide that explains what it does, walks through how to use it, and tells you what to expect. The writing is concise, specific to your app, and ready for your users to read.",
   },
   {
     icon: Code,
-    title: "MDX Export",
+    title: "Markdown Export",
     description:
-      "Generated documentation is structured as clean MDX files, ready to integrate into your existing docs site. Includes images, formatted text, and proper hierarchy — no conversion needed.",
+      "You get clean Markdown files with inline screenshots, packaged as a downloadable .zip. Host them anywhere you want: your docs site, Notion, GitHub, or any knowledge base platform.",
   },
 ];
 
@@ -72,7 +72,7 @@ export default function LandingPage() {
           </h1>
 
           <p className="mt-6 text-lg text-gray-400 max-w-xl mx-auto leading-relaxed">
-            Generate user documentation with screenshots automatically.
+            Generate end-user help centers with screenshots automatically.
             Provide your app URL and let AI handle the rest.
           </p>
 

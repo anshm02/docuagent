@@ -60,6 +60,7 @@ export interface DiscoveryResult {
   hasError: boolean;
   navElements: string[];
   screenshotUrl: string;
+  parentCategory?: string; // sidebar parent label, e.g., "Charts" for "Bar Chart"
 }
 
 // --- Cost Budget System (V2) ---
@@ -80,9 +81,10 @@ export interface Feature {
   name: string; // sidebar/nav label, e.g., "Team Management"
   slug: string; // kebab-case, e.g., "team-management"
   description: string;
-  route: string; // the page URL path
+  route: string; // the page URL path (primary page, or first sub-page)
   hasForm: boolean;
   priority: number; // lower = higher priority (sidebar order)
+  subPages?: { name: string; route: string }[]; // grouped child pages (e.g., Bar Chart, Line Chart under "Charts")
 }
 
 export interface FeatureSelectionResult {
