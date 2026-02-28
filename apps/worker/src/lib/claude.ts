@@ -99,6 +99,60 @@ export async function claudeVision(prompt: string, imageBase64: string, options?
   }
 }
 
+export async function claudeVisionMulti(
+  prompt: string,
+  images: { mediaType: string; data: string }[],
+  options?: {
+    maxTokens?: number;
+    temperature?: number;
+    system?: string;
+  },
+): Promise<string> {
+  async function attempt(): Promise<string> {
+    const content: Anthropic.Messages.ContentBlockParam[] = [
+      ...images.map(
+        (img) =>
+          ({
+            type: "image" as const,
+            source: {
+              type: "base64" as const,
+              media_type: img.mediaType as "image/png",
+              data: img.data,
+            },
+          }),
+      ),
+      { type: "text" as const, text: prompt },
+    ];
+
+    const response = await getClient().messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: options?.maxTokens ?? 4096,
+      temperature: options?.temperature ?? 0,
+      ...(options?.system ? { system: options.system } : {}),
+      messages: [{ role: "user", content }],
+    });
+
+    const textBlock = response.content.find((b) => b.type === "text");
+    if (!textBlock || textBlock.type !== "text") {
+      throw new Error("No text response from Claude");
+    }
+    return textBlock.text;
+  }
+
+  try {
+    return await attempt();
+  } catch (err) {
+    if (isRateLimitError(err)) {
+      console.log(
+        `[claude] Rate limited on multi-vision call. Waiting ${RATE_LIMIT_RETRY_MS / 1000}s and retrying...`,
+      );
+      await new Promise((r) => setTimeout(r, RATE_LIMIT_RETRY_MS));
+      return await attempt();
+    }
+    throw err;
+  }
+}
+
 export function parseJsonResponse<T>(raw: string): T {
   let cleaned = raw.trim();
   if (cleaned.startsWith("```")) {

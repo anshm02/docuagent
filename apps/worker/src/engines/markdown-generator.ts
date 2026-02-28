@@ -14,6 +14,7 @@ import type {
   PRDSummary,
   FeaturePageContent,
 } from "@docuagent/shared";
+import type { AppUnderstanding } from "./crawl.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,6 +26,7 @@ export interface MarkdownGenConfig {
   appUrl: string;
   prdSummary: PRDSummary | null;
   features: Feature[];
+  appUnderstanding?: AppUnderstanding;
 }
 
 export interface MarkdownGenResult {
@@ -112,6 +114,7 @@ async function generateFeaturePageContent(
   prdSummary: PRDSummary | null,
   otherFeatures: { name: string; slug: string }[],
   screenshotFilenames: Map<string, string>,
+  appUnderstanding?: AppUnderstanding,
 ): Promise<FeaturePageContent> {
   const screenAnalyses = screens
     .filter((s) => s.analysis)
@@ -149,6 +152,11 @@ async function generateFeaturePageContent(
   );
   const codeContext = heroScreen?.code_context ?? null;
 
+  // Build enriched context from app understanding
+  const featureUnderstanding = appUnderstanding?.features.find(
+    (f) => f.slug === feature.slug || f.name === feature.name,
+  );
+
   const prompt = featureProsePrompt({
     featureName: feature.name,
     featureSlug: feature.slug,
@@ -156,6 +164,13 @@ async function generateFeaturePageContent(
     otherFeatures,
     prdSummary,
     codeContext,
+    featureUnderstanding: featureUnderstanding
+      ? {
+          purpose: featureUnderstanding.purpose,
+          userGoals: featureUnderstanding.userGoals,
+          connectedFeatures: featureUnderstanding.connectedFeatures,
+        }
+      : undefined,
   });
 
   try {
@@ -707,6 +722,7 @@ export async function runMarkdownGenerator(
       config.prdSummary,
       otherFeatures,
       screenshotFilenames,
+      config.appUnderstanding,
     );
 
     // Build feature markdown

@@ -9,7 +9,7 @@ import { runCodeAnalysis } from "./engines/code-analysis.js";
 import { runPrdAnalysis } from "./engines/prd-analysis.js";
 import { runDiscoveryCrawl } from "./engines/discovery-crawl.js";
 import { selectFeatures } from "./engines/feature-planner.js";
-import { runCrawl, findLoginPage, detectAppName } from "./engines/crawl.js";
+import { runCrawl, findLoginPage, detectAppName, type AppUnderstanding } from "./engines/crawl.js";
 import { runScreenAnalysis } from "./engines/screen-analysis.js";
 import { runMarkdownGenerator } from "./engines/markdown-generator.js";
 import {
@@ -246,6 +246,7 @@ export async function runPipeline(jobId: string): Promise<void> {
   let additionalFeatures: { title: string; description: string }[] = [];
   let costEstimate: CostEstimate | null = null;
   let screensCaptured = 0;
+  let appUnderstanding: AppUnderstanding | undefined;
   let hadPrd = false;
   let loginUrl: string | null | undefined = typedJob.login_url;
 
@@ -513,6 +514,11 @@ export async function runPipeline(jobId: string): Promise<void> {
       });
 
       screensCaptured = crawlResult.screens.length;
+      if (crawlResult.appUnderstanding) {
+        appUnderstanding = crawlResult.appUnderstanding;
+        appUnderstanding.appName = appName;
+        console.log(`[orchestrator] App understanding: ${appUnderstanding.features.length} features understood`);
+      }
       console.log(`[orchestrator] Crawl complete: ${screensCaptured} screens, ${crawlResult.errors.length} errors`);
 
       await supabase
@@ -596,6 +602,7 @@ export async function runPipeline(jobId: string): Promise<void> {
         appUrl: typedJob.app_url,
         prdSummary,
         features,
+        appUnderstanding,
       });
 
       // Calculate actual cost

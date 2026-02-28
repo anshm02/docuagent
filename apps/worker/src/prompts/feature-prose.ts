@@ -11,6 +11,11 @@ export function featureProsePrompt(opts: {
   otherFeatures: { name: string; slug: string }[];
   prdSummary?: PRDSummary | null;
   codeContext?: Record<string, unknown> | null;
+  featureUnderstanding?: {
+    purpose: string;
+    userGoals: string[];
+    connectedFeatures: string[];
+  } | null;
 }): string {
   return `You are a senior technical writer creating end-user documentation for a SaaS application. You write like Stripe's docs team — clear, concise, scenario-driven, and respectful of the reader's intelligence.
 
@@ -24,6 +29,10 @@ ${opts.otherFeatures.map((f) => `- ${f.name} (link: ./${f.slug}.md)`).join("\n")
 
 ${opts.prdSummary ? `PRODUCT CONTEXT: ${opts.prdSummary.product_purpose}` : ""}
 ${opts.codeContext ? `CODE CONTEXT: ${JSON.stringify(opts.codeContext)}` : ""}
+${opts.featureUnderstanding ? `PAGE UNDERSTANDING (from exploration):
+  Purpose: ${opts.featureUnderstanding.purpose}
+  User goals: ${opts.featureUnderstanding.userGoals.join(", ")}
+  Connected features: ${opts.featureUnderstanding.connectedFeatures.join(", ") || "none identified"}` : ""}
 
 SCREEN DATA:
 ${JSON.stringify(
