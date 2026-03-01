@@ -309,6 +309,13 @@ export default function NewJobPage() {
                 />
               </div>
 
+              {/* Login method note */}
+              <p className="text-xs text-gray-500">
+                Email and password login only. OAuth (Google, GitHub), magic links,
+                and SSO are not yet supported. Make sure your app has an email/password
+                login option.
+              </p>
+
               {/* Security callout */}
               <div className="bg-emerald-500/5 border border-emerald-500/10 rounded-lg p-4 flex gap-3">
                 <Shield className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />

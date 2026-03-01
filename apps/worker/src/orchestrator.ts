@@ -8,7 +8,7 @@ import { getSupabase } from "./lib/supabase.js";
 import { runCodeAnalysis } from "./engines/code-analysis.js";
 import { runPrdAnalysis } from "./engines/prd-analysis.js";
 import { runDiscoveryCrawl } from "./engines/discovery-crawl.js";
-import { selectFeatures } from "./engines/feature-planner.js";
+import { selectFeatures, prescanPages, getPrescanCandidates } from "./engines/feature-planner.js";
 import { runCrawl, findLoginPage, detectAppName, type AppUnderstanding } from "./engines/crawl.js";
 import { runScreenAnalysis } from "./engines/screen-analysis.js";
 import { runMarkdownGenerator } from "./engines/markdown-generator.js";
@@ -29,6 +29,7 @@ import type {
   DiscoveryResult,
   CostEstimate,
   FeatureSelectionResult,
+  PageScanResult,
 } from "@docuagent/shared";
 import { PAGE_TIMEOUT_MS } from "@docuagent/shared";
 
@@ -250,6 +251,7 @@ export async function runPipeline(jobId: string): Promise<void> {
   let hadPrd = false;
   let loginUrl: string | null | undefined = typedJob.login_url;
   let postLoginRoute: string | undefined;
+  let preScanResults: PageScanResult[] | undefined;
 
   try {
     // ═════════════════════════════════════════════════
@@ -389,7 +391,7 @@ export async function runPipeline(jobId: string): Promise<void> {
             console.error(`[orchestrator] Login attempt ${attempt + 1} failed:`, err);
             if (attempt === 1) {
               await closeStagehand();
-              await failJob(jobId, "Login failed after 2 attempts. Check your credentials and login URL.");
+              await failJob(jobId, "Login failed — we couldn't sign into your app after 2 attempts. Please check:\n• Your email and password are correct\n• Your app supports email/password login (not just Google/GitHub OAuth)\n• Your app isn't blocking automated browsers");
               await deleteCredentials(jobId);
               return;
             }
@@ -403,7 +405,7 @@ export async function runPipeline(jobId: string): Promise<void> {
         if (stillOnLoginPage) {
           console.error(`[orchestrator] Login loop completed but still on login page: ${postLoginUrl}`);
           await closeStagehand();
-          await failJob(jobId, "Login failed — still on login page after 2 attempts. Check your credentials and login URL.");
+          await failJob(jobId, "Login failed — still on login page after 2 attempts. Please check:\n• Your email and password are correct\n• Your app supports email/password login (not just Google/GitHub OAuth)\n• Your app isn't blocking automated browsers");
           await deleteCredentials(jobId);
           return;
         }
@@ -450,6 +452,29 @@ export async function runPipeline(jobId: string): Promise<void> {
       await broadcastProgress(jobId, "info", discoverySummary);
 
       console.log(`[orchestrator] Discovery complete: ${discoveryResults.length} routes visited`);
+
+      // ─── Pre-scan: evaluate each candidate page with Claude vision ───
+      const prescanCandidates = getPrescanCandidates(discoveryResults, postLoginRoute);
+      if (prescanCandidates.length > 0) {
+        console.log(`[orchestrator] Pre-scanning ${prescanCandidates.length} candidate pages...`);
+        await broadcastProgress(jobId, "info", `Evaluating ${prescanCandidates.length} pages for documentation value...`);
+
+        preScanResults = await prescanPages(
+          page,
+          stagehand,
+          prescanCandidates,
+          typedJob.app_url,
+          async (msg) => { await broadcastProgress(jobId, "info", msg); },
+        );
+
+        const worthDocumenting = preScanResults.filter((r) => r.documentationValue >= 5);
+        const selectedNames = worthDocumenting.map((r) => r.suggestedName).join(", ");
+        await broadcastProgress(
+          jobId,
+          "info",
+          `Pre-scan complete: ${worthDocumenting.length} pages worth documenting${selectedNames ? `: ${selectedNames}` : ""}`,
+        );
+      }
     } finally {
       await closeStagehand();
     }
@@ -474,8 +499,8 @@ export async function runPipeline(jobId: string): Promise<void> {
     console.log(`[orchestrator] ${budgetMsg}`);
     await broadcastProgress(jobId, "info", budgetMsg);
 
-    // Select features (simple — no AI call needed for small apps)
-    const selectionResult = selectFeatures(discoveryResults, costEstimate.features_planned, postLoginRoute);
+    // Select features (uses pre-scan results when available for quality filtering)
+    const selectionResult = selectFeatures(discoveryResults, costEstimate.features_planned, postLoginRoute, preScanResults);
     features = selectionResult.selected;
     additionalFeatures = selectionResult.additional;
 

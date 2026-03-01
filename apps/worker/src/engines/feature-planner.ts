@@ -1,11 +1,20 @@
 // ============================================================
 // DocuAgent — Feature Planner (replaces Journey Planner)
 // Selects which discovered features to document within budget.
-// For small apps (<= maxFeatures), documents all.
-// For large apps, prioritizes by scoring.
+// Includes pre-scan phase: visits each candidate page, takes a
+// screenshot, and asks Claude to evaluate documentation value.
 // ============================================================
 
-import type { DiscoveryResult, Feature, FeatureSelectionResult } from "@docuagent/shared";
+import type { Stagehand, Page } from "@browserbasehq/stagehand";
+import type {
+  DiscoveryResult,
+  Feature,
+  FeatureSelectionResult,
+  PageScanResult,
+} from "@docuagent/shared";
+import { MAX_PRESCAN_CANDIDATES } from "@docuagent/shared";
+import { claudeVision, parseJsonResponse } from "../lib/claude.js";
+import { waitForSettle } from "../lib/stagehand.js";
 
 function slugify(text: string): string {
   return text
@@ -33,6 +42,7 @@ function shouldExcludeRoute(route: string): boolean {
 
 // ---------------------------------------------------------------------------
 // Feature Scoring — prioritize core app pages over UI component showcases
+// Used as a pre-filter BEFORE the Claude-powered pre-scan (to cap candidates)
 // ---------------------------------------------------------------------------
 
 function scoreFeature(route: string, pageTitle: string, hasForm: boolean, hasTable: boolean): number {
@@ -91,19 +101,184 @@ function scoreFeature(route: string, pageTitle: string, hasForm: boolean, hasTab
 }
 
 // ---------------------------------------------------------------------------
+// Overlay dismissal (lightweight version for pre-scan — no stagehand.act)
+// ---------------------------------------------------------------------------
+
+async function dismissOverlaysForPrescan(page: Page, stagehand: Stagehand): Promise<void> {
+  try {
+    const hasOverlay = await page.evaluate(() => {
+      const d = (globalThis as any).document;
+      const selectors = [
+        '[class*="cookie"]', '[class*="consent"]', '[class*="popup"]',
+        '[class*="modal"][class*="overlay"]', '[class*="banner"]',
+        '[class*="notification"]', '[class*="toast"]',
+        '[role="dialog"]', '[class*="onboarding"]',
+      ];
+      for (const sel of selectors) {
+        const el = d.querySelector(sel);
+        if (el && el.offsetHeight > 0) return true;
+      }
+      return false;
+    });
+
+    if (hasOverlay) {
+      try {
+        await stagehand.act(
+          "Close any popup, banner, cookie notice, or overlay that is blocking the main content. Click the X button, Close button, Accept button, or Dismiss button.",
+          { timeout: 5000 },
+        );
+      } catch {
+        try {
+          await stagehand.act("Press the Escape key", { timeout: 3000 });
+        } catch { /* ignore */ }
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  } catch {
+    // Overlays are best-effort
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pre-scan: Visit each candidate page and ask Claude to evaluate it
+// ---------------------------------------------------------------------------
+
+const PRESCAN_PROMPT = `Look at this screenshot of a page at route "ROUTE_PLACEHOLDER" with title "TITLE_PLACEHOLDER".
+
+Rate this page's DOCUMENTATION VALUE on a scale of 1-10:
+
+10 = Core product feature with real functionality (task management, project views, team settings, dashboards with data, calendar with events, CRM contacts, forms that create/edit records)
+8 = Important settings or configuration page (account settings, workspace settings, integrations, billing)
+6 = Useful secondary feature (activity log, search results, file browser, notifications list WITH content)
+4 = Reference or showcase page (component library, style guide, demo page with sample data)
+2 = Empty state with no real content (inbox showing "No messages", empty task list with only "Create your first task" prompt, today view with no items)
+1 = Onboarding/tutorial page ("Getting Started", "Welcome", "Tour"), marketing page, or error page
+
+CRITICAL RULES:
+- If the page is mostly empty with just a prompt to "create your first X", score it 2-3 max
+- If the page title contains "Getting Started", "Welcome", "Tutorial", "Onboarding", "Tour", score it 1-2
+- If the page is a notification inbox or message inbox that's empty, score it 1-2
+- If the page shows "Today" or "Upcoming" with no items, score it 2
+- If the page has real data, interactive elements, forms, tables with content, score it 7+
+- If the page is a core workflow (creating issues, managing projects, team settings), score it 9-10
+- The more UNIQUE and USEFUL content visible on the page, the higher the score
+- Pages that look like they'd actually help a user learn the product = high score
+- Pages that are just empty shells waiting for data = low score
+
+Return ONLY valid JSON. No markdown, no explanation, no backticks.
+{"score": 8, "reason": "Project management board with Kanban columns, filters, and real task cards - core product feature", "suggestedName": "Project Board", "pageType": "core_feature"}`;
+
+export async function prescanPages(
+  page: Page,
+  stagehand: Stagehand,
+  candidates: DiscoveryResult[],
+  appUrl: string,
+  onProgress?: (message: string) => Promise<void>,
+): Promise<PageScanResult[]> {
+  const results: PageScanResult[] = [];
+
+  console.log(`[pre-scan] Starting pre-scan of ${candidates.length} candidate pages...`);
+
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate = candidates[i];
+    try {
+      if (onProgress) {
+        await onProgress(`Evaluating page ${i + 1}/${candidates.length}: ${candidate.pageTitle || candidate.route}...`);
+      }
+
+      // Navigate to the page
+      const fullUrl = candidate.route.startsWith("http")
+        ? candidate.route
+        : new URL(candidate.route, appUrl).toString();
+      await page.goto(fullUrl, { waitUntil: "networkidle", timeoutMs: 15000 }).catch(() => {
+        // Timeout is OK, page may still be usable
+      });
+      await new Promise((r) => setTimeout(r, 2000)); // Let page render
+
+      // Dismiss any overlays
+      await dismissOverlaysForPrescan(page, stagehand);
+
+      // Scroll to top
+      await page.evaluate(() => (globalThis as any).window.scrollTo(0, 0));
+
+      // Take a quick screenshot
+      const screenshot = await page.screenshot({ type: "png" });
+      const base64 = Buffer.from(screenshot).toString("base64");
+
+      // Build the prompt with actual route and title
+      const prompt = PRESCAN_PROMPT
+        .replace("ROUTE_PLACEHOLDER", candidate.route)
+        .replace("TITLE_PLACEHOLDER", candidate.pageTitle || "");
+
+      // Ask Claude to evaluate
+      const evaluation = await claudeVision(prompt, base64, {
+        maxTokens: 200,
+        temperature: 0,
+        system: "You evaluate web application pages for documentation value. Return only JSON.",
+      });
+
+      const parsed = parseJsonResponse<{
+        score: number;
+        reason: string;
+        suggestedName: string;
+        pageType: string;
+      }>(evaluation);
+
+      const scanResult: PageScanResult = {
+        route: candidate.route,
+        pageTitle: candidate.pageTitle,
+        documentationValue: parsed.score,
+        reason: parsed.reason,
+        suggestedName: parsed.suggestedName || candidate.pageTitle,
+        pageType: (parsed.pageType || "other") as PageScanResult["pageType"],
+      };
+      results.push(scanResult);
+
+      const statusEmoji = parsed.score >= 5 ? "+" : "-";
+      console.log(`[pre-scan] [${statusEmoji}] ${candidate.route}: score=${parsed.score}/10 (${parsed.pageType}) — ${parsed.reason}`);
+
+      if (onProgress) {
+        const verdict = parsed.score >= 5 ? "worth documenting" : "skipping (not a core feature)";
+        await onProgress(`${candidate.pageTitle || candidate.route}: ${verdict} (${parsed.score}/10)`);
+      }
+
+      // Rate limit protection
+      await new Promise((r) => setTimeout(r, 3000));
+    } catch (err) {
+      console.log(`[pre-scan] Failed to scan ${candidate.route}: ${err}`);
+      // Default to medium score if scan fails — let the heuristic scoring decide
+      results.push({
+        route: candidate.route,
+        pageTitle: candidate.pageTitle,
+        documentationValue: 5,
+        reason: "Scan failed, default score",
+        suggestedName: candidate.pageTitle,
+        pageType: "other",
+      });
+    }
+  }
+
+  // Summary
+  const worthIt = results.filter((r) => r.documentationValue >= 5).length;
+  const skipped = results.filter((r) => r.documentationValue < 5).length;
+  console.log(`[pre-scan] Complete: ${worthIt} pages worth documenting, ${skipped} pages skipped`);
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
 // Title Cleaning — remove framework prefixes, app name suffixes, etc.
+// Used as fallback when pre-scan doesn't provide a suggestedName.
 // ---------------------------------------------------------------------------
 
 function cleanPageTitle(rawTitle: string, appName: string): string {
   let title = rawTitle;
 
   // Step 1: Remove everything after the first separator
-  // "Next.js Bar Chart | TailAdmin - Dashboard Template" → "Next.js Bar Chart"
   const pipesSplit = title.split(/\s*[|–—]\s*/);
   if (pipesSplit.length > 1) {
     title = pipesSplit[0].trim();
   } else {
-    // Also handle " - " as separator if no | found
     const dashSplit = title.split(/\s+-\s+/);
     if (dashSplit.length > 1) {
       title = dashSplit[0].trim();
@@ -121,7 +296,7 @@ function cleanPageTitle(rawTitle: string, appName: string): string {
     }
   }
 
-  // Step 3: Remove generic suffixes only if title would still be meaningful
+  // Step 3: Remove generic suffixes
   const suffixes = [" Page", " Template", " Component", " Demo", " Example", " View", " Screen"];
   for (const s of suffixes) {
     if (title.endsWith(s) && title.length > s.length + 2) {
@@ -148,11 +323,9 @@ function cleanPageTitle(rawTitle: string, appName: string): string {
 // ---------------------------------------------------------------------------
 
 function detectAppNameFromTitles(candidates: DiscoveryResult[]): string {
-  // Look for a common suffix pattern like "| AppName" or "- AppName"
   const titles = candidates.map((r) => (r.pageTitle || "").trim()).filter(Boolean);
   if (titles.length < 2) return "";
 
-  // Find common suffix after | or -
   const suffixes: string[] = [];
   for (const t of titles) {
     const pipeMatch = t.match(/\s*[|–—]\s*(.+)$/);
@@ -168,15 +341,12 @@ function detectAppNameFromTitles(candidates: DiscoveryResult[]): string {
 
   if (suffixes.length < 2) return "";
 
-  // Find the most common suffix
   const counts = new Map<string, number>();
   for (const s of suffixes) {
     counts.set(s, (counts.get(s) ?? 0) + 1);
   }
   const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
   if (sorted[0] && sorted[0][1] >= 2) {
-    // Extract just the first "word" of the suffix as app name
-    // e.g. "TailAdmin - Next.js Dashboard Template" → "TailAdmin"
     const fullSuffix = sorted[0][0];
     const dashParts = fullSuffix.split(/\s+-\s+/);
     return dashParts[0].trim();
@@ -185,20 +355,61 @@ function detectAppNameFromTitles(candidates: DiscoveryResult[]): string {
   return "";
 }
 
+// ---------------------------------------------------------------------------
+// Get pre-scan candidates — filter and optionally cap by heuristic score
+// ---------------------------------------------------------------------------
+
+export function getPrescanCandidates(
+  discoveryResults: DiscoveryResult[],
+  postLoginRoute?: string,
+): DiscoveryResult[] {
+  const normalizedPostLoginRoute = postLoginRoute?.replace(/\/$/, "") || undefined;
+
+  // Filter to accessible, non-error pages (same logic as selectFeatures)
+  const candidates = discoveryResults
+    .filter((r) => r.isAccessible && !r.hasError)
+    .filter((r) => {
+      const normalizedRoute = r.route.replace(/\/$/, "") || "/";
+      if (normalizedPostLoginRoute && normalizedRoute === normalizedPostLoginRoute) return true;
+      return !shouldExcludeRoute(r.route);
+    });
+
+  // If more than MAX_PRESCAN_CANDIDATES, use heuristic scoring to pick the top ones
+  if (candidates.length > MAX_PRESCAN_CANDIDATES) {
+    console.log(`[feature-planner] ${candidates.length} candidates exceeds max ${MAX_PRESCAN_CANDIDATES}, using heuristic pre-filter`);
+    const scored = candidates.map((c) => ({
+      candidate: c,
+      score: scoreFeature(c.route, c.pageTitle || "", c.hasForm, c.hasTable),
+    }));
+    scored.sort((a, b) => b.score - a.score);
+    const capped = scored.slice(0, MAX_PRESCAN_CANDIDATES).map((s) => s.candidate);
+    console.log(`[feature-planner] Pre-filter selected top ${capped.length} by heuristic score`);
+    return capped;
+  }
+
+  return candidates;
+}
+
+// ---------------------------------------------------------------------------
+// Main feature selection — now uses pre-scan results when available
+// ---------------------------------------------------------------------------
+
 export function selectFeatures(
   discoveryResults: DiscoveryResult[],
   maxFeatures: number,
   postLoginRoute?: string,
+  preScanResults?: PageScanResult[],
 ): FeatureSelectionResult {
   console.log("[feature-planner] Selecting features from discovery results...");
   console.log(`[feature-planner]   Discovery pages: ${discoveryResults.length}`);
   console.log(`[feature-planner]   Budget: max ${maxFeatures} features`);
+  if (preScanResults) {
+    console.log(`[feature-planner]   Pre-scan results available: ${preScanResults.length} pages scored`);
+  }
 
-  // Normalize post-login route for comparison
   const normalizedPostLoginRoute = postLoginRoute?.replace(/\/$/, "") || undefined;
 
   // Filter to only accessible, non-error, authenticated pages
-  // Exception: the post-login landing page is never excluded
   const candidates = discoveryResults
     .filter((r) => r.isAccessible && !r.hasError)
     .filter((r) => {
@@ -209,15 +420,67 @@ export function selectFeatures(
 
   console.log(`[feature-planner]   Candidates after filtering: ${candidates.length}`);
 
-  // Detect app name from page titles for title cleaning
-  const detectedAppName = detectAppNameFromTitles(candidates);
+  // Build pre-scan lookup
+  const scanLookup = new Map<string, PageScanResult>();
+  if (preScanResults) {
+    for (const sr of preScanResults) {
+      scanLookup.set(sr.route, sr);
+    }
+  }
+
+  // If we have pre-scan results, filter by documentation value FIRST
+  let filteredCandidates = candidates;
+  if (preScanResults && preScanResults.length > 0) {
+    const worthDocumenting: DiscoveryResult[] = [];
+    const excluded: { route: string; score: number; reason: string }[] = [];
+
+    for (const c of candidates) {
+      const scan = scanLookup.get(c.route);
+      if (!scan) {
+        // Not pre-scanned (wasn't in top candidates) — include if heuristic score is OK
+        const heuristicScore = scoreFeature(c.route, c.pageTitle || "", c.hasForm, c.hasTable);
+        if (heuristicScore >= 0) {
+          worthDocumenting.push(c);
+        }
+        continue;
+      }
+      if (scan.documentationValue >= 5) {
+        worthDocumenting.push(c);
+      } else {
+        excluded.push({ route: c.route, score: scan.documentationValue, reason: scan.reason });
+      }
+    }
+
+    // Log exclusions
+    if (excluded.length > 0) {
+      console.log(`[feature-planner]   Pre-scan EXCLUDED ${excluded.length} low-value pages:`);
+      for (const e of excluded) {
+        console.log(`[feature-planner]     EXCLUDED: ${e.route} (score=${e.score}) — ${e.reason}`);
+      }
+    }
+
+    // Sort worth-documenting by pre-scan score (highest first)
+    worthDocumenting.sort((a, b) => {
+      const scanA = scanLookup.get(a.route);
+      const scanB = scanLookup.get(b.route);
+      const scoreA = scanA?.documentationValue ?? 5;
+      const scoreB = scanB?.documentationValue ?? 5;
+      return scoreB - scoreA;
+    });
+
+    filteredCandidates = worthDocumenting;
+    console.log(`[feature-planner]   After pre-scan filter: ${filteredCandidates.length} pages worth documenting`);
+  }
+
+  // Detect app name from page titles for title cleaning (fallback)
+  const detectedAppName = detectAppNameFromTitles(filteredCandidates);
   if (detectedAppName) {
     console.log(`[feature-planner]   Detected app name from titles: "${detectedAppName}"`);
   }
 
   // Detect if most pages share the same title (generic site title)
   const titleCounts = new Map<string, number>();
-  for (const r of candidates) {
+  for (const r of filteredCandidates) {
     const t = (r.pageTitle || "").trim();
     titleCounts.set(t, (titleCounts.get(t) ?? 0) + 1);
   }
@@ -235,14 +498,18 @@ export function selectFeatures(
   }
 
   // Convert to Feature objects with scores
-  const scoredFeatures: (Feature & { score: number })[] = candidates.map((r, idx) => {
+  const scoredFeatures: (Feature & { score: number })[] = filteredCandidates.map((r, idx) => {
+    const scan = scanLookup.get(r.route);
     let name = "";
 
-    // If pages share a generic site title, always use route-based names
-    if (hasGenericTitle && r.pageTitle === mostCommonTitle[0]) {
+    // Prefer Claude's suggested name from pre-scan
+    if (scan?.suggestedName && scan.suggestedName.length >= 2 && scan.suggestedName.length <= 50) {
+      name = scan.suggestedName;
+    } else if (hasGenericTitle && r.pageTitle === mostCommonTitle[0]) {
+      // Fallback: route-based names for generic titles
       name = deriveNameFromRoute(r.route);
     } else {
-      // Clean the page title first
+      // Fallback: clean the page title
       const cleaned = cleanPageTitle(r.pageTitle || "", detectedAppName);
       if (cleaned && cleaned.length >= 2 && cleaned.toLowerCase() !== "dashboard" && cleaned.length <= 40) {
         name = cleaned;
@@ -251,9 +518,17 @@ export function selectFeatures(
       }
     }
 
-    let score = scoreFeature(r.route, r.pageTitle || "", r.hasForm, r.hasTable);
+    // Use pre-scan score if available, otherwise fall back to heuristic
+    let score: number;
+    if (scan) {
+      // Map pre-scan value (1-10) to a comparable range
+      // Pre-scan 10 → 200, Pre-scan 5 → 100, Pre-scan 1 → 20
+      score = scan.documentationValue * 20;
+    } else {
+      score = scoreFeature(r.route, r.pageTitle || "", r.hasForm, r.hasTable);
+    }
 
-    // Post-login landing page gets highest priority — every user sees it first
+    // Post-login landing page gets highest priority
     if (postLoginRoute) {
       const normalizedRoute = r.route.replace(/\/$/, "") || "/";
       const normalizedPostLogin = postLoginRoute.replace(/\/$/, "") || "/";
@@ -281,18 +556,13 @@ export function selectFeatures(
   // Log all scores for debugging
   console.log("[feature-planner]   Feature scores:");
   for (const f of scoredFeatures) {
-    console.log(`[feature-planner]     score=${f.score.toString().padStart(4)} | ${f.name} (${f.route})`);
+    const scan = scanLookup.get(f.route);
+    const scanInfo = scan ? ` [pre-scan: ${scan.documentationValue}/10 ${scan.pageType}]` : " [heuristic]";
+    console.log(`[feature-planner]     score=${f.score.toString().padStart(4)} | ${f.name} (${f.route})${scanInfo}`);
   }
 
-  // Filter out features with score < -50 entirely (not even in "additional")
-  const viable = scoredFeatures.filter((f) => f.score >= -50);
-  const excluded = scoredFeatures.filter((f) => f.score < -50);
-  if (excluded.length > 0) {
-    console.log(`[feature-planner]   Excluded ${excluded.length} low-value pages:`);
-    for (const f of excluded) {
-      console.log(`[feature-planner]     score=${f.score} | ${f.name} (${f.route})`);
-    }
-  }
+  // Filter out features with score < 0 entirely (not even in "additional")
+  const viable = scoredFeatures.filter((f) => f.score >= 0);
 
   // De-duplicate by slug
   const seenSlugs = new Set<string>();
@@ -304,11 +574,9 @@ export function selectFeatures(
   }
 
   // --- Group features by parent category ---
-  // If multiple routes share the same parentCategory, merge them into ONE feature with subPages
   const parentGroups = new Map<string, (Feature & { score: number })[]>();
   const ungrouped: (Feature & { score: number })[] = [];
 
-  // Build parentCategory lookup from discoveryResults
   const routeToParent = new Map<string, string>();
   for (const dr of discoveryResults) {
     if (dr.parentCategory) {
@@ -330,7 +598,6 @@ export function selectFeatures(
   const mergedFeatures: (Feature & { score: number })[] = [];
   for (const [parent, children] of parentGroups) {
     if (children.length > 1) {
-      // Multiple children → group as one feature with subPages
       const bestScore = Math.max(...children.map((c) => c.score));
       const allHaveForms = children.some((c) => c.hasForm);
       const parentSlug = slugify(parent);
@@ -343,14 +610,13 @@ export function selectFeatures(
         name: parent,
         slug: parentSlug,
         description: `${parent} feature with ${children.length} sections`,
-        route: children[0].route, // primary route = first child
+        route: children[0].route,
         hasForm: allHaveForms,
         priority: 0,
-        score: bestScore + 10, // Slight boost for grouped features (more content)
+        score: bestScore + 10,
         subPages,
       });
     } else {
-      // Single child with a parent — keep as-is (no grouping needed)
       ungrouped.push(...children);
     }
   }
@@ -359,13 +625,10 @@ export function selectFeatures(
   const allFeatures = [...mergedFeatures, ...ungrouped];
   allFeatures.sort((a, b) => b.score - a.score);
 
-  // Select top N features with score >= 0
-  const selectable = allFeatures.filter((f) => f.score >= 0);
-  const lowScore = allFeatures.filter((f) => f.score < 0 && f.score >= -50);
-
-  const selected: Feature[] = selectable.slice(0, maxFeatures).map(({ score: _score, ...rest }) => rest);
-  const additionalFromSelectable = selectable.slice(maxFeatures);
-  const additional = [...additionalFromSelectable, ...lowScore].map((f) => ({
+  // Select top N features
+  const selected: Feature[] = allFeatures.slice(0, maxFeatures).map(({ score: _score, ...rest }) => rest);
+  const additionalFromAll = allFeatures.slice(maxFeatures);
+  const additional = additionalFromAll.map((f) => ({
     title: f.name,
     description: f.description,
   }));

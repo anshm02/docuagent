@@ -92,6 +92,28 @@ export interface FeatureSelectionResult {
   additional: { title: string; description: string }[];
 }
 
+// --- Page Pre-Scan (before feature selection) ---
+
+export type PageType =
+  | "core_feature"
+  | "settings"
+  | "onboarding"
+  | "empty_state"
+  | "notification_inbox"
+  | "tutorial"
+  | "admin"
+  | "component_showcase"
+  | "other";
+
+export interface PageScanResult {
+  route: string;
+  pageTitle: string;
+  documentationValue: number; // 1-10
+  reason: string;
+  suggestedName: string;
+  pageType: PageType;
+}
+
 // --- Screen Analysis (Stage 6) ---
 
 export interface ScreenAnalysis {

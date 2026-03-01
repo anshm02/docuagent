@@ -16,6 +16,7 @@ import type {
 import {
   MAX_SCREENS_DEFAULT,
   PAGE_TIMEOUT_MS,
+  FEATURE_TIMEOUT_MS,
 } from "@docuagent/shared";
 import { claudeVision, claudeVisionMulti, parseJsonResponse } from "../lib/claude.js";
 import crypto from "crypto";
@@ -573,9 +574,12 @@ export async function discoverNavigation(
 ): Promise<RouteInfo[]> {
   console.log("[crawl] Discovering navigation via Stagehand observe...");
   try {
-    const actions = await stagehand.observe(
-      "Find all navigation links in the sidebar, top navigation bar, header, and any dropdown menus. Return each link with its text and URL.",
-    );
+    const actions = await Promise.race([
+      stagehand.observe(
+        "Find all navigation links in the sidebar, top navigation bar, header, and any dropdown menus. Return each link with its text and URL.",
+      ),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Observe timeout")), 15_000)),
+    ]);
 
     const routes: RouteInfo[] = [];
     const seen = new Set<string>();
@@ -1341,6 +1345,9 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
       });
 
       try {
+        // Wrap the entire feature crawl in a hard timeout
+        await Promise.race([
+          (async () => {
         // Navigate to the feature's page
         const fullUrl = feature.route.startsWith("http")
           ? feature.route
@@ -1370,7 +1377,7 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
         if (healthIssue) {
           console.log(`[crawl] Skipped ${feature.name}: ${healthIssue}`);
           await broadcastProgress(config.jobId, "info", `Skipped ${feature.name}: ${healthIssue}`);
-          continue;
+          return;
         }
 
         // Check for session expiry
@@ -1384,14 +1391,14 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
             const reauthed = await authenticate(stagehand, page, config.loginUrl, config.credentials);
             if (!reauthed) {
               errors.push({ featureId: feature.id, action: "re-auth", error: "Re-authentication failed" });
-              continue;
+              return;
             }
             // Retry navigation
             await page.goto(fullUrl, { waitUntil: "networkidle", timeoutMs: PAGE_TIMEOUT_MS });
             await waitForSettle(page);
           } else if (hasLoginFields) {
             errors.push({ featureId: feature.id, action: "navigate", error: "Session expired, re-auth cap reached" });
-            continue;
+            return;
           }
         }
 
@@ -1523,15 +1530,36 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
         }
 
         console.log(`[crawl] Feature "${feature.name}" complete`);
+          })(), // end of async IIFE
+          new Promise<void>((_, reject) =>
+            setTimeout(() => reject(new Error(`Feature timeout after ${FEATURE_TIMEOUT_MS / 1000}s`)), FEATURE_TIMEOUT_MS),
+          ),
+        ]); // end of Promise.race
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : (typeof err === "object" ? JSON.stringify(err) : String(err));
-        console.error(`[crawl] Feature "${feature.name}" failed: ${errMsg}`);
+        const isTimeout = errMsg.includes("Feature timeout");
+        console.error(`[crawl] Feature "${feature.name}" ${isTimeout ? "TIMED OUT" : "failed"}: ${errMsg}`);
         errors.push({
           featureId: feature.id,
           action: `crawl ${feature.name}`,
           error: errMsg,
         });
-        await broadcastProgress(config.jobId, "error", `Failed to document ${feature.name}: ${errMsg}`);
+        await broadcastProgress(
+          config.jobId,
+          "error",
+          isTimeout
+            ? `${feature.name} timed out after ${FEATURE_TIMEOUT_MS / 1000}s — moving on`
+            : `Failed to document ${feature.name}: ${errMsg}`,
+        );
+
+        // After a timeout, navigate back to app root to reset browser state
+        if (isTimeout) {
+          try {
+            await page.goto(config.appUrl, { waitUntil: "networkidle", timeoutMs: 10000 });
+          } catch {
+            // Even navigation failed, but we continue
+          }
+        }
       }
     }
 
