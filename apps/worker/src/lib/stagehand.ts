@@ -32,6 +32,7 @@ export async function initStagehand(): Promise<{ stagehand: Stagehand; page: Pag
     verbose: 0,
     disablePino: true,
     disableAPI: true,
+    experimental: true,
   });
 
   await stagehand.init();

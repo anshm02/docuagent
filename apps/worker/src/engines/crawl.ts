@@ -1,4 +1,5 @@
 import { Stagehand, Page } from "@browserbasehq/stagehand";
+import { z } from "zod";
 import { getSupabase } from "../lib/supabase.js";
 import {
   initStagehand,
@@ -18,7 +19,7 @@ import {
   PAGE_TIMEOUT_MS,
   FEATURE_TIMEOUT_MS,
 } from "@docuagent/shared";
-import { claudeVision, claudeVisionMulti, parseJsonResponse } from "../lib/claude.js";
+// claude.js imports no longer needed for crawl — agent() handles AI calls internally
 import crypto from "crypto";
 
 // ---------------------------------------------------------------------------
@@ -43,45 +44,36 @@ export interface CrawlResult {
 }
 
 // ---------------------------------------------------------------------------
-// Two-phase exploration types
+// Agent-based exploration types
 // ---------------------------------------------------------------------------
 
 export interface PageUnderstanding {
-  page_purpose: string;
-  user_goals: string[];
-  interactive_elements: InteractiveElement[];
-  empty_state: boolean;
-  empty_state_cta?: string;
-  connected_features: string[];
-  page_complexity: "simple" | "moderate" | "complex";
+  purpose: string;
+  userGoals: string[];
+  pageType: string;
+  interactionsPerformed: { action: string; result: string; useful: boolean }[];
+  connectedFeatures: string[];
+  hasSubmittableForm: boolean;
+  isReadOnly: boolean;
 }
 
-interface InteractiveElement {
-  what: string;
-  type:
-    | "form_field"
-    | "dropdown"
-    | "button"
-    | "tab"
-    | "chart_element"
-    | "table_filter"
-    | "modal_trigger"
-    | "accordion"
-    | "toggle"
-    | "date_picker"
-    | "color_picker"
-    | "search_as_feature"
-    | "navigation_search";
-  explore_action: string;
-}
-
-interface ScreenshotPlan {
-  description: string;
-  actions: string[];
-  value: string;
-  submit_after: boolean;
-  capture_result: boolean;
-}
+const PageUnderstandingSchema = z.object({
+  purpose: z.string().describe("1-2 sentences: what is this page for? What real-world problem does it solve?"),
+  userGoals: z.array(z.string()).describe("2-4 things a user would come to this page to accomplish"),
+  pageType: z.enum([
+    "dashboard", "form", "table", "chart", "profile", "calendar",
+    "settings", "list", "detail", "empty_state", "component_showcase",
+    "inbox", "activity_log", "search", "kanban", "editor", "other",
+  ]).describe("The type of page"),
+  interactionsPerformed: z.array(z.object({
+    action: z.string().describe("What I did"),
+    result: z.string().describe("What happened"),
+    useful: z.boolean().describe("Did this change the page visually?"),
+  })).describe("Interactions I performed"),
+  connectedFeatures: z.array(z.string()).describe("Other app features this page relates to"),
+  hasSubmittableForm: z.boolean().describe("Is there a form with a safe submit button?"),
+  isReadOnly: z.boolean().describe("Is this page purely informational with no meaningful interactions?"),
+});
 
 export interface FeatureUnderstanding {
   name: string;
@@ -774,474 +766,352 @@ async function waitForContentLoaded(page: Page): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Screenshot comparison — content area only (Claude vision)
+// Screenshot comparison — byte-level (no AI calls)
 // ---------------------------------------------------------------------------
 
-let comparisonCallsThisFeature = 0;
+function isScreenshotDifferent(a: Buffer, b: Buffer): boolean {
+  // Size difference > 5KB = definitely different
+  if (Math.abs(a.length - b.length) > 5000) return true;
 
-async function hasPageMeaningfullyChanged(
-  before: Buffer,
-  after: Buffer,
-): Promise<boolean> {
-  // Quick size check — very different sizes = definitely changed
-  if (Math.abs(before.length - after.length) > 5000) return true;
+  // Compare middle section of image (skips header/footer which may be identical)
+  const midA = Math.floor(a.length / 2);
+  const midB = Math.floor(b.length / 2);
+  const rangeA = Math.min(2000, Math.floor(a.length / 4));
+  const rangeB = Math.min(2000, Math.floor(b.length / 4));
+  const sampleA = a.slice(midA - rangeA, midA + rangeA).toString("hex");
+  const sampleB = b.slice(midB - rangeB, midB + rangeB).toString("hex");
 
-  // Rate limit: max 2 comparison calls per feature
-  if (comparisonCallsThisFeature >= 2) {
-    // Fall back to byte comparison
-    const refSlice = before.slice(0, 2000).toString("hex");
-    const curSlice = after.slice(0, 2000).toString("hex");
-    return refSlice !== curSlice;
-  }
+  return sampleA !== sampleB;
+}
 
-  // 3-second delay before each comparison call (rate limit protection)
-  await new Promise((r) => setTimeout(r, 3000));
-  comparisonCallsThisFeature++;
+function hashScreenshot(buffer: Buffer): string {
+  const mid = Math.floor(buffer.length / 2);
+  const range = Math.min(1000, Math.floor(buffer.length / 4));
+  const sample = buffer.slice(mid - range, mid + range);
+  return crypto.createHash("md5").update(sample).digest("hex");
+}
 
+// ---------------------------------------------------------------------------
+// URL verification — check if we're still on the right page
+// ---------------------------------------------------------------------------
+
+function isOnSamePage(current: string, expected: string): boolean {
   try {
-    const response = await claudeVisionMulti(
-      `Compare these two screenshots. Look ONLY at the MAIN CONTENT AREA — ignore the header, search bar, sidebar, and navigation completely.
-
-Is the main content meaningfully different between the two screenshots?
-Answer with just: {"changed": true} or {"changed": false}`,
-      [
-        { mediaType: "image/png", data: before.toString("base64") },
-        { mediaType: "image/png", data: after.toString("base64") },
-      ],
-      { maxTokens: 50, system: "You compare screenshots." },
-    );
-
-    const result = JSON.parse(response);
-    return result.changed === true;
+    const c = new URL(current);
+    const e = new URL(expected);
+    return c.host === e.host && c.pathname === e.pathname;
   } catch {
-    // If parsing/API fails, assume changed to be safe
     return true;
   }
 }
 
 // ---------------------------------------------------------------------------
-// Phase 1: EXPLORE — Understand the page with Claude vision
+// Loading screen detection — check if page is still loading
 // ---------------------------------------------------------------------------
 
-async function explorePage(
-  stagehand: Stagehand,
-  page: Page,
-  feature: Feature,
-  heroBase64: string,
-  fullUrl: string,
-): Promise<PageUnderstanding> {
-  console.log(`[crawl] Phase 1: Exploring "${feature.name}"...`);
+async function isPageLoading(page: Page): Promise<boolean> {
+  try {
+    return await page.evaluate(() => {
+      const d = (globalThis as any).document;
+      const body = d.body;
 
-  // Rate limit protection: 3-second delay before exploration vision call
-  await new Promise((r) => setTimeout(r, 3000));
-
-  const explorationPrompt = `Look at this screenshot of the "${feature.name}" page carefully.
-
-Tell me:
-
-1. PAGE_PURPOSE: What is this page for? What real-world user need does it serve? (1-2 sentences)
-
-2. USER_GOALS: What would a user come to this page to accomplish? List 1-4 concrete goals.
-   Examples: "Add a new team member", "Check which projects are overdue", "Create a calendar event"
-
-3. INTERACTIVE_ELEMENTS: What can I click, fill, hover, expand, or interact with in the MAIN CONTENT AREA?
-   For each element:
-   - what: describe it ("Email input field in the Invite section", "Status filter dropdown above the table", "Add Event button")
-   - type: form_field | dropdown | button | tab | chart_element | table_filter | modal_trigger | accordion | toggle | date_picker | color_picker | search_as_feature | navigation_search
-   - explore_action: what should I do to understand it? ("Click to see dropdown options", "Hover to see tooltip data", "Click to open creation modal")
-
-   CRITICAL DISTINCTIONS:
-   - A search bar in the page HEADER or TOP NAVIGATION BAR = "navigation_search" (it searches across the whole app, not this page's content)
-   - A search/filter bar WITHIN the main content area that filters THIS PAGE's data = "search_as_feature"
-   - A filter dropdown that changes what data is displayed in a table/list below it = "table_filter"
-   - If unsure, look at WHERE the element is positioned. Header/navbar = navigation. Inside the content area = feature.
-
-4. EMPTY_STATE: Is this page showing an empty state ("No data yet", "Create your first X")? If yes, what's the call-to-action?
-
-5. CONNECTED_FEATURES: Based on what you see, does this page relate to other parts of the app? (e.g., "Changes here probably appear in an activity log", "This seems connected to billing/subscription")
-
-6. PAGE_COMPLEXITY: simple (1 screenshot enough) | moderate (2 screenshots) | complex (3 screenshots needed)
-
-Return as JSON with these exact fields:
-{
-  "page_purpose": "...",
-  "user_goals": ["..."],
-  "interactive_elements": [{"what": "...", "type": "...", "explore_action": "..."}],
-  "empty_state": false,
-  "empty_state_cta": null,
-  "connected_features": ["..."],
-  "page_complexity": "simple|moderate|complex"
-}
-
-Return ONLY valid JSON. No markdown, no explanation, no backticks.`;
-
-  const raw = await claudeVision(explorationPrompt, heroBase64, {
-    system: "You are a senior technical writer exploring a web application page for the first time. You're trying to understand this page deeply — what it's for, what users can do here, and what would be most valuable to document.",
-    maxTokens: 2000,
-    temperature: 0,
-  });
-
-  const understanding = parseJsonResponse<PageUnderstanding>(raw);
-
-  console.log(`[crawl] Page understanding for "${feature.name}":`);
-  console.log(`  Purpose: ${understanding.page_purpose}`);
-  console.log(`  User goals: ${understanding.user_goals.join(", ")}`);
-  console.log(`  Interactive elements: ${understanding.interactive_elements.length}`);
-  console.log(`  Complexity: ${understanding.page_complexity}`);
-  if (understanding.empty_state) {
-    console.log(`  Empty state detected. CTA: ${understanding.empty_state_cta ?? "none"}`);
-  }
-
-  // Quick exploration — learn what's behind interactive elements (no screenshots)
-  const explorableElements = understanding.interactive_elements
-    .filter((el) => el.type !== "navigation_search" && el.type !== "form_field")
-    .slice(0, 3);
-
-  for (const element of explorableElements) {
-    try {
-      if (element.type === "dropdown" || element.type === "table_filter") {
-        await stagehand.act(
-          `Click the ${element.what} to see its options`,
-          { timeout: 8000 },
-        );
-        await new Promise((r) => setTimeout(r, 1000));
-        try { await stagehand.act("Press the Escape key", { timeout: 3000 }); } catch { /* ok */ }
-      } else if (element.type === "modal_trigger") {
-        await stagehand.act(`Click ${element.what}`, { timeout: 8000 });
-        await new Promise((r) => setTimeout(r, 1500));
-        try { await stagehand.act("Press the Escape key", { timeout: 3000 }); } catch { /* ok */ }
-      } else if (element.type === "tab") {
-        await stagehand.act(`Click the ${element.what} tab`, { timeout: 8000 });
-        await new Promise((r) => setTimeout(r, 1000));
+      // Check for loading indicators
+      const selectors = [
+        '[class*="loading"]', '[class*="spinner"]', '[class*="skeleton"]',
+        '[class*="Loading"]', '[class*="Spinner"]',
+        '.animate-pulse', '.animate-spin',
+        '[role="progressbar"]', '[aria-busy="true"]',
+      ];
+      for (const sel of selectors) {
+        const el = d.querySelector(sel);
+        if (el && el.offsetHeight > 0 && el.offsetWidth > 0) return true;
       }
-    } catch {
-      // Exploration action failed, continue
-    }
 
-    // Navigate back to initial state for clean documentation
-    try {
-      await page.goto(fullUrl, {
-        waitUntil: "networkidle",
-        timeoutMs: PAGE_TIMEOUT_MS,
-      });
-      await waitForSettle(page);
-    } catch {
-      // Navigation back failed, continue anyway
-    }
+      // Very little visible text = probably loading
+      const text = body.innerText?.trim() || "";
+      if (text.length < 50) return true;
+
+      // Single centered image with no content = splash screen
+      const imgs = d.querySelectorAll("img");
+      if (imgs.length <= 2 && text.length < 100) return true;
+
+      return false;
+    });
+  } catch {
+    return false;
   }
-
-  // If empty state detected, follow the CTA
-  if (understanding.empty_state && understanding.empty_state_cta) {
-    try {
-      console.log(`[crawl] Following empty state CTA: ${understanding.empty_state_cta}`);
-      await stagehand.act(understanding.empty_state_cta, { timeout: 10000 });
-      await waitForSettle(page);
-    } catch {
-      console.log("[crawl] Empty state CTA failed, continuing with current state");
-    }
-  }
-
-  return understanding;
 }
 
 // ---------------------------------------------------------------------------
-// Phase 2: DOCUMENT — Plan and execute purposeful screenshots
+// External app detection
 // ---------------------------------------------------------------------------
 
-async function planDocumentationScreenshots(
-  feature: Feature,
-  understanding: PageUnderstanding,
-  heroBase64: string,
-): Promise<ScreenshotPlan[]> {
-  console.log(`[crawl] Phase 2: Planning documentation screenshots for "${feature.name}"...`);
+function isExternalApp(appUrl: string): boolean {
+  return !appUrl.includes("localhost") && !appUrl.includes("127.0.0.1");
+}
 
-  // Rate limit protection: 3-second delay before plan vision call
-  await new Promise((r) => setTimeout(r, 3000));
+// ---------------------------------------------------------------------------
+// Agent system prompt for page exploration
+// ---------------------------------------------------------------------------
 
-  const planPrompt = `You explored the "${feature.name}" page and learned:
-${JSON.stringify(understanding, null, 2)}
+const AGENT_SYSTEM_PROMPT = `You are a senior technical writer exploring a web application page to create documentation. You must deeply understand every page you visit.
 
-The hero screenshot (default state) is already captured.
+YOUR TOOLS:
+- think: ALWAYS use this first to reason about what you see before acting
+- act: Perform a single action (click, type, select)
+- fillForm: Fill all form fields at once with realistic data
+- extract: Get structured data from the page
+- scroll: Scroll to see more content
+- wait: Wait for loading/animations to finish
+- screenshot: Take a screenshot
+- navback: Go back if you navigated away
 
-Now plan the documentation screenshots. For each screenshot you want:
+WORKFLOW FOR EVERY PAGE:
+1. First, THINK: "What is this page? What can users do here? What would be most valuable to document?"
+2. If you see a loading spinner or skeleton, WAIT 3-5 seconds
+3. Interact with the most documentation-worthy elements:
+   - Forms → use fillForm with realistic data (Sarah Johnson, sarah@company.com, +1 415 555 0192, Q4 Planning Review)
+   - Chart → hover over a data point to show tooltip
+   - Modal trigger (Add/Create/Edit button) → click to open, fill any form inside
+   - Tabs → click to see different views
+   - Filters that change displayed data → use one
+   - Expandable sections → expand them
+4. If the page is read-only (displays data, logs, charts with no interactions), that is FINE — just observe and report
+5. NEVER interact with the header search bar, sidebar navigation, or global nav elements
+6. NEVER click Delete, Remove, Send, Invite, Share, or Pay buttons
+7. You MAY click Save, Create, Add, Submit, Update, Apply, Confirm buttons
+8. Maximum 8 actions per page. Stop when you've captured the most valuable interactions.`;
 
-1. DESCRIPTION: What state should the page be in? Be extremely specific.
-2. ACTIONS: Exact sequence of Stagehand actions to reach this state. Use specific field labels and button text from what you observed.
-3. VALUE: One sentence — what does this screenshot TEACH the reader that the hero doesn't?
-4. SUBMIT_AFTER: Should I click a submit/save button after filling?
-   - YES if: saving settings, creating an event/item, updating a profile — these show the user the result of their action
-   - NO if: the submit would send a message/email/notification to another person, delete data, change billing, or have irreversible consequences
-5. CAPTURE_RESULT: After submitting, should I take ANOTHER screenshot of the result state?
-   - YES if: there's a success message, the page updates to show the new data, a new item appears in a list
-   - NO if: the result looks the same as before
+// ---------------------------------------------------------------------------
+// Safe agent execution with error handling
+// ---------------------------------------------------------------------------
 
-Rules:
-- Maximum 2 action screenshots (plus the hero = 3 total max)
-- NEVER plan a screenshot that would look identical to the hero or to another planned screenshot
-- NEVER plan typing meaningless text into a navigation search bar — that teaches the reader nothing
-- If the page is read-only with no meaningful interactions (just displays data), plan 0 action screenshots — the hero is enough
-- If there's a creation flow (Add Event, Create Project, Invite Member), that's the MOST valuable screenshot — show the form filled with realistic data
-- If there's a chart, the most valuable screenshot is hovering to show the tooltip with real data values
-- If there's a filter that changes displayed data, the most valuable screenshot is showing filtered results
-- If there's a modal, show it open — but only if the modal has meaningful content (a form, settings, etc.)
-- Each screenshot must teach something DIFFERENT
-
-For form filling, use contextually appropriate data:
-- Names: "Sarah Johnson", "Alex Chen", "Maria Garcia"
-- Emails: "sarah@company.com", "alex.chen@acmecorp.io"
-- Phone: "+1 (415) 555-0192"
-- Dates: use a realistic near-future date
-- Event titles: "Q4 Planning Review", "Team Standup", "Client Onboarding"
-- Project names: "Website Redesign", "Mobile App v2.0"
-- Descriptions: "Review quarterly objectives and align on priorities for next sprint."
-- URLs: "https://linkedin.com/in/sarahjohnson"
-- NEVER use "Sample text for testing", "test", "Jane Smith in search bar", or any placeholder-feeling text
-
-Return as JSON array of screenshot plans. Empty array [] if hero is sufficient.
-
-Format:
-[
-  {
-    "description": "...",
-    "actions": ["action 1", "action 2"],
-    "value": "...",
-    "submit_after": false,
-    "capture_result": false
-  }
-]
-
-Return ONLY valid JSON. No markdown, no explanation, no backticks.`;
-
-  const raw = await claudeVision(planPrompt, heroBase64, {
-    system: "You are a senior technical writer. You've just explored this page and understand it deeply. Now plan exactly which screenshots to take to create excellent documentation.",
-    maxTokens: 2000,
-    temperature: 0,
+async function safeAgentExecute(
+  stagehand: Stagehand,
+  agentConfig: { model?: string; systemPrompt?: string },
+  executeOpts: { instruction: string; maxSteps?: number; signal?: AbortSignal; output?: z.ZodObject<any> },
+  page: Page,
+  featureUrl: string,
+): Promise<{ success: boolean; message: string; actions: any[]; output?: Record<string, unknown> } | null> {
+  const agent = stagehand.agent({
+    model: agentConfig.model ?? "anthropic/claude-sonnet-4-6",
+    systemPrompt: agentConfig.systemPrompt ?? AGENT_SYSTEM_PROMPT,
   });
 
-  const plans = parseJsonResponse<ScreenshotPlan[]>(raw);
-
-  console.log(`[crawl] Documentation plan for "${feature.name}": ${plans.length} action screenshots`);
-  for (const plan of plans) {
-    console.log(`  - ${plan.description} (value: ${plan.value})`);
+  try {
+    return await agent.execute(executeOpts);
+  } catch (err: any) {
+    if (err.message?.includes("429") || err.message?.includes("rate_limit")) {
+      console.log("[crawl] Rate limited. Waiting 60s...");
+      await new Promise((r) => setTimeout(r, 60000));
+      try {
+        return await agent.execute(executeOpts);
+      } catch (retryErr: any) {
+        console.log(`[crawl] Agent retry failed: ${retryErr.message}`);
+      }
+    } else if (err.name === "AgentAbortError" || err.message?.includes("aborted")) {
+      console.log("[crawl] Agent timed out.");
+    } else {
+      console.log(`[crawl] Agent error: ${err.message}`);
+    }
+    // Navigate back to correct page
+    try {
+      await page.goto(featureUrl, { waitUntil: "networkidle", timeoutMs: 10000 });
+    } catch { /* even this failed, but continue */ }
+    return null;
   }
-
-  return plans;
 }
 
-interface TwoPhaseResult {
+// ---------------------------------------------------------------------------
+// Agent-based feature exploration — replaces two-phase crawl
+// ---------------------------------------------------------------------------
+
+interface AgentCrawlResult {
   screens: ScreenRecord[];
-  understanding: PageUnderstanding;
+  understanding: PageUnderstanding | null;
   screenshotDescriptions: string[];
 }
 
-async function executeDocumentationPlan(
+async function agentFeatureCrawl(
   stagehand: Stagehand,
   page: Page,
   feature: Feature,
   jobId: string,
   codeContext: Record<string, unknown> | null,
   heroBuffer: Buffer,
-  understanding: PageUnderstanding,
-  plans: ScreenshotPlan[],
   startOrderIndex: number,
   fullUrl: string,
-): Promise<{ screens: ScreenRecord[]; descriptions: string[] }> {
-  const screens: ScreenRecord[] = [];
+  appUrl: string,
+): Promise<AgentCrawlResult> {
+  const startTime = Date.now();
+  const external = isExternalApp(appUrl);
+  const screenshots: { buffer: Buffer; description: string; filename: string }[] = [];
+  const allCapturedHashes = new Set<string>();
   const descriptions: string[] = ["hero (default state)"];
-  let orderIndex = startOrderIndex;
 
-  for (let pi = 0; pi < plans.length; pi++) {
-    const plan = plans[pi];
-    console.log(`[crawl] Executing screenshot plan ${pi + 1}/${plans.length}: ${plan.description}`);
+  // Hash the hero screenshot
+  const heroHash = hashScreenshot(heroBuffer);
+  allCapturedHashes.add(heroHash);
+
+  // ---- Phase 2: Agent exploration with structured output ----
+  console.log(`[crawl] Agent exploring "${feature.name}"...`);
+
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort("Timeout"), external ? 180000 : 120000);
+
+  let understanding: PageUnderstanding | null = null;
+  try {
+    const result = await safeAgentExecute(
+      stagehand,
+      { model: "anthropic/claude-sonnet-4-6", systemPrompt: AGENT_SYSTEM_PROMPT },
+      {
+        instruction: `Explore the "${feature.name}" page. Understand its purpose, interact with its key elements, and report what you found and did.`,
+        maxSteps: 10,
+        signal: timeout.signal,
+        output: PageUnderstandingSchema,
+      },
+      page,
+      fullUrl,
+    );
+
+    if (result?.output) {
+      understanding = result.output as unknown as PageUnderstanding;
+      console.log(`[crawl] Agent explored ${feature.name}: ${result.message}`);
+      console.log(`[crawl] Understanding: purpose="${understanding.purpose}", pageType="${understanding.pageType}", goals=${understanding.userGoals.length}, interactions=${understanding.interactionsPerformed.length}`);
+    } else if (result) {
+      console.log(`[crawl] Agent completed but no structured output for ${feature.name}: ${result.message}`);
+    }
+  } catch (err: any) {
+    console.log(`[crawl] Agent error on ${feature.name}: ${err.message}`);
+  } finally {
+    clearTimeout(timer);
+  }
+
+  // ---- Phase 3: Post-exploration screenshot with 3-layer verification ----
+  const currentUrl = page.url();
+  if (!isOnSamePage(currentUrl, fullUrl)) {
+    console.log(`[crawl] Agent navigated away from ${feature.name}. Going back.`);
     try {
-      await page.goto(fullUrl, { waitUntil: "networkidle", timeoutMs: PAGE_TIMEOUT_MS });
-      await waitForContentLoaded(page);
-    } catch {
-      console.log(`[crawl] Navigation timeout during plan execution, continuing`);
-    }
+      await page.goto(fullUrl, { waitUntil: "networkidle", timeoutMs: 15000 });
+      await new Promise((r) => setTimeout(r, external ? 5000 : 2000));
+    } catch { /* navigation failed */ }
+  }
 
-    // Dismiss any overlays
-    await dismissOverlays(page, stagehand);
+  const postBuffer = await takeScreenshot(page);
 
-    // Scroll to top for consistent starting position
-    await page.evaluate(() => (globalThis as any).window.scrollTo(0, 0));
-    await new Promise((r) => setTimeout(r, 500));
+  // Layer 1: Not a loading screen
+  const loading = await isPageLoading(page);
+  // Layer 2: Content area different from hero
+  const different = !loading && isScreenshotDifferent(heroBuffer, postBuffer);
+  // Layer 3: Not a cross-feature duplicate
+  const postHash = hashScreenshot(postBuffer);
+  const duplicate = allCapturedHashes.has(postHash);
 
-    // Execute the planned actions
-    let actionsFailed = false;
-    for (const action of plan.actions) {
-      try {
-        await stagehand.act(action, { timeout: 15000 });
-        await new Promise((r) => setTimeout(r, 1000));
-      } catch (err) {
-        console.log(`[crawl] Action failed: ${action} — ${err}. Skipping this plan.`);
-        actionsFailed = true;
-        break;
-      }
-    }
-
-    if (actionsFailed) continue;
-
-    await waitForContentLoaded(page);
-
-    // Verify the page actually changed (content area comparison)
-    const actionBuffer = await takeScreenshot(page);
-    const changed = await hasPageMeaningfullyChanged(heroBuffer, actionBuffer);
-    if (!changed) {
-      console.log(`[crawl] Screenshot identical to hero after "${plan.description}" — discarding`);
-      continue;
-    }
-
-    // Store the action screenshot
-    const actionLabel = `action-${pi + 1}`;
-    const filename = `${feature.slug}-${actionLabel}.png`;
-    const result = await captureScreen(page, jobId, {
-      featureId: feature.id,
-      featureSlug: feature.slug,
-      screenshotLabel: actionLabel,
-      navPath: `${feature.name} (${plan.description})`,
-      screenType: "page",
-      codeContext,
-      orderIndex,
-      broadcastLabel: `${feature.name} — ${plan.description}`,
-      descriptiveFilename: filename,
-      skipDuplicateCheck: true,
+  if (!loading && different && !duplicate) {
+    allCapturedHashes.add(postHash);
+    screenshots.push({
+      buffer: postBuffer,
+      description: `${feature.name} after interaction`,
+      filename: `${feature.slug}-action-1.png`,
     });
+    descriptions.push(`${feature.name} after interaction`);
+    console.log(`[crawl] ✓ Action screenshot captured for ${feature.name}`);
+  } else {
+    console.log(`[crawl] ✗ Post-exploration screenshot skipped: ${loading ? "loading" : !different ? "identical" : "duplicate"}`);
+  }
 
-    if (result) {
-      screens.push(result.record);
-      orderIndex++;
-      descriptions.push(plan.description);
+  // ---- Phase 4: Form submission and result capture ----
+  if (understanding?.hasSubmittableForm && !understanding?.isReadOnly) {
+    console.log(`[crawl] Attempting form submission for ${feature.name}...`);
+    try {
+      await page.goto(fullUrl, { waitUntil: "networkidle", timeoutMs: 15000 });
+      await new Promise((r) => setTimeout(r, external ? 5000 : 2000));
+    } catch { /* navigation timeout ok */ }
 
-      // If submit was planned
-      if (plan.submit_after) {
-        try {
-          console.log(`[crawl] Submitting after "${plan.description}"...`);
-          await stagehand.act(
-            "Click the submit, save, or confirm button",
-            { timeout: 10000 },
-          );
-          await waitForContentLoaded(page);
-          await new Promise((r) => setTimeout(r, 2000));
+    const submitTimeout = new AbortController();
+    const submitTimer = setTimeout(() => submitTimeout.abort(), external ? 90000 : 60000);
 
-          if (plan.capture_result) {
-            const resultBuffer = await takeScreenshot(page);
-            const resultChanged = await hasPageMeaningfullyChanged(actionBuffer, resultBuffer);
-            if (resultChanged) {
-              const resultFilename = `${feature.slug}-result-${pi + 1}.png`;
-              const resultResult = await captureScreen(page, jobId, {
-                featureId: feature.id,
-                featureSlug: feature.slug,
-                screenshotLabel: `result-${pi + 1}`,
-                navPath: `${feature.name} (${plan.description} result)`,
-                screenType: "page",
-                codeContext,
-                orderIndex,
-                broadcastLabel: `${feature.name} — ${plan.description} (result)`,
-                descriptiveFilename: resultFilename,
-                skipDuplicateCheck: true,
-              });
-              if (resultResult) {
-                screens.push(resultResult.record);
-                orderIndex++;
-                descriptions.push(`${plan.description} (result)`);
-              }
-            }
-          }
-        } catch (err) {
-          console.log(`[crawl] Submit failed after "${plan.description}": ${err}`);
+    try {
+      const submitResult = await safeAgentExecute(
+        stagehand,
+        {
+          model: "anthropic/claude-sonnet-4-6",
+          systemPrompt: "You fill forms and submit them. Use realistic data. Never send messages, delete data, or make payments.",
+        },
+        {
+          instruction: "Fill all form fields with realistic data, then click the Save/Submit/Create button. If no safe submit button exists, do nothing.",
+          maxSteps: 8,
+          signal: submitTimeout.signal,
+        },
+        page,
+        fullUrl,
+      );
+
+      if (submitResult) {
+        await new Promise((r) => setTimeout(r, 3000));
+
+        const resultBuffer = await takeScreenshot(page);
+        const resultHash = hashScreenshot(resultBuffer);
+        const resultLoading = await isPageLoading(page);
+        if (!resultLoading && isScreenshotDifferent(heroBuffer, resultBuffer) && !allCapturedHashes.has(resultHash)) {
+          allCapturedHashes.add(resultHash);
+          screenshots.push({
+            buffer: resultBuffer,
+            description: `${feature.name} after submission`,
+            filename: `${feature.slug}-result-1.png`,
+          });
+          descriptions.push(`${feature.name} after submission`);
+          console.log(`[crawl] ✓ Result screenshot captured for ${feature.name}`);
         }
       }
+    } catch {
+      /* timeout or failure — acceptable */
+    } finally {
+      clearTimeout(submitTimer);
     }
   }
 
-  return { screens, descriptions };
-}
+  // ---- Store screenshots ----
+  const screens: ScreenRecord[] = [];
+  let orderIndex = startOrderIndex;
 
-// ---------------------------------------------------------------------------
-// Two-phase feature crawl — EXPLORE then DOCUMENT
-// ---------------------------------------------------------------------------
+  for (const shot of screenshots) {
+    const screenshotUrl = await uploadScreenshot(jobId, shot.buffer, shot.filename);
+    if (!screenshotUrl) continue;
 
-async function twoPhaseFeatureCrawl(
-  stagehand: Stagehand,
-  page: Page,
-  feature: Feature,
-  jobId: string,
-  codeContext: Record<string, unknown> | null,
-  heroBuffer: Buffer,
-  startOrderIndex: number,
-  fullUrl: string,
-): Promise<TwoPhaseResult> {
-  const startTime = Date.now();
-  // Reset comparison call counter for this feature
-  comparisonCallsThisFeature = 0;
-
-  const heroBase64 = heroBuffer.toString("base64");
-
-  // --- PHASE 1: Explore ---
-  let understanding: PageUnderstanding;
-  try {
-    understanding = await explorePage(stagehand, page, feature, heroBase64, fullUrl);
-  } catch (err) {
-    console.log(`[crawl] Phase 1 exploration failed for "${feature.name}": ${err}. Using minimal understanding.`);
-    understanding = {
-      page_purpose: `${feature.name} page`,
-      user_goals: [],
-      interactive_elements: [],
-      empty_state: false,
-      connected_features: [],
-      page_complexity: "simple",
+    const dom = await cleanDom(page);
+    const record: ScreenRecord = {
+      id: "",
+      url: page.url(),
+      routePath: new URL(page.url()).pathname,
+      navPath: `${feature.name} (${shot.description})`,
+      screenshotUrl,
+      domHtml: dom,
+      codeContext,
+      screenType: "page",
+      featureId: feature.id,
+      featureSlug: feature.slug,
+      screenshotLabel: shot.filename.replace(`${feature.slug}-`, "").replace(".png", ""),
+      createdEntityId: null,
+      status: "crawled",
+      orderIndex,
     };
-  }
 
-  // --- PHASE 2: Plan + Execute Documentation ---
-  let screens: ScreenRecord[] = [];
-  let descriptions: string[] = ["hero (default state)"];
+    const id = await storeScreen(jobId, record);
+    record.id = id;
+    screens.push(record);
+    orderIndex++;
 
-  if (understanding.page_complexity !== "simple" || understanding.interactive_elements.length > 0) {
-    try {
-      // Reset to clean state before planning screenshots
-      try {
-        await page.goto(fullUrl, { waitUntil: "networkidle", timeoutMs: PAGE_TIMEOUT_MS });
-        await waitForContentLoaded(page);
-      } catch {
-        // Navigation timeout is OK
-      }
-
-      // Re-take hero for comparison (page may have changed during exploration)
-      await dismissOverlays(page, stagehand);
-      await page.evaluate(() => (globalThis as any).window.scrollTo(0, 0));
-      await new Promise((r) => setTimeout(r, 500));
-      const freshHero = await takeScreenshot(page);
-      const freshHeroBase64 = freshHero.toString("base64");
-
-      const plans = await planDocumentationScreenshots(feature, understanding, freshHeroBase64);
-
-      if (plans.length > 0) {
-        const result = await executeDocumentationPlan(
-          stagehand,
-          page,
-          feature,
-          jobId,
-          codeContext,
-          freshHero,
-          understanding,
-          plans,
-          startOrderIndex,
-          fullUrl,
-        );
-        screens = result.screens;
-        descriptions = [...descriptions, ...result.descriptions.slice(1)]; // skip duplicate "hero"
-      }
-    } catch (err) {
-      console.log(`[crawl] Phase 2 documentation failed for "${feature.name}": ${err}`);
-    }
-  } else {
-    console.log(`[crawl] Simple page "${feature.name}" — hero screenshot is sufficient`);
+    await broadcastProgress(
+      jobId,
+      "screenshot",
+      `Captured: ${feature.name} — ${shot.description}`,
+      screenshotUrl,
+    );
   }
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  console.log(`[crawl] Feature "${feature.name}" two-phase crawl: ${screens.length} action screenshots in ${elapsed}s`);
+  console.log(`[crawl] Feature "${feature.name}" agent crawl: ${screens.length} action screenshots in ${elapsed}s`);
 
   return { screens, understanding, screenshotDescriptions: descriptions };
 }
@@ -1416,15 +1286,22 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
             }
           : null;
 
-        // --- Dismiss overlays before hero screenshot ---
-        await dismissOverlays(page, stagehand);
-
-        // --- Wait for content to load ---
-        await waitForContentLoaded(page);
-
-        // --- Scroll to top for consistent starting position ---
+        // --- Wait for initial page load ---
+        const external = isExternalApp(config.appUrl);
         await page.evaluate(() => (globalThis as any).window.scrollTo(0, 0));
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, external ? 5000 : 2000));
+
+        // --- Dismiss overlays before hero screenshot ---
+        try {
+          await stagehand.act("Close any cookie banner, popup, notification, or overlay blocking the main content", { timeout: 5000 });
+        } catch { /* no overlay */ }
+
+        // --- Wait for content to load (with loading screen retry) ---
+        for (let attempt = 0; attempt < 3; attempt++) {
+          if (!await isPageLoading(page)) break;
+          console.log(`[crawl] Loading detected for ${feature.name} (attempt ${attempt + 1}/3). Waiting 5s...`);
+          await new Promise((r) => setTimeout(r, 5000));
+        }
 
         // --- HERO screenshot: default state of the page ---
         await broadcastProgress(config.jobId, "info", `Capturing ${feature.name} — default view`);
@@ -1444,12 +1321,12 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
           orderIndex++;
         }
 
-        // --- TWO-PHASE EXPLORATION: explore → understand → document ---
+        // --- AGENT EXPLORATION: autonomous page exploration + screenshot capture ---
         if (screens.length < maxScreens) {
           const heroBuffer = await takeScreenshot(page);
           await broadcastProgress(config.jobId, "info", `Exploring ${feature.name}...`);
 
-          const twoPhaseResult = await twoPhaseFeatureCrawl(
+          const agentResult = await agentFeatureCrawl(
             stagehand,
             page,
             feature,
@@ -1458,19 +1335,20 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
             heroBuffer,
             orderIndex,
             fullUrl,
+            config.appUrl,
           );
 
-          screens.push(...twoPhaseResult.screens);
-          orderIndex += twoPhaseResult.screens.length;
+          screens.push(...agentResult.screens);
+          orderIndex += agentResult.screens.length;
 
           // Store feature understanding for appUnderstanding
           featureUnderstandings.push({
             name: feature.name,
             slug: feature.slug,
-            purpose: twoPhaseResult.understanding.page_purpose,
-            userGoals: twoPhaseResult.understanding.user_goals,
-            connectedFeatures: twoPhaseResult.understanding.connected_features,
-            screenshotDescriptions: twoPhaseResult.screenshotDescriptions,
+            purpose: agentResult.understanding?.purpose ?? `${feature.name} page`,
+            userGoals: agentResult.understanding?.userGoals ?? [],
+            connectedFeatures: agentResult.understanding?.connectedFeatures ?? [],
+            screenshotDescriptions: agentResult.screenshotDescriptions,
           });
         }
 
@@ -1513,15 +1391,15 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
                 orderIndex++;
               }
 
-              // Run two-phase on sub-pages too (but simpler — share understanding)
+              // Run agent exploration on sub-pages too
               if (screens.length < maxScreens) {
                 const subHero = await takeScreenshot(page);
-                const subTwoPhase = await twoPhaseFeatureCrawl(
+                const subAgentResult = await agentFeatureCrawl(
                   stagehand, page, { ...feature, name: subPage.name },
-                  config.jobId, null, subHero, orderIndex, subUrl,
+                  config.jobId, null, subHero, orderIndex, subUrl, config.appUrl,
                 );
-                screens.push(...subTwoPhase.screens);
-                orderIndex += subTwoPhase.screens.length;
+                screens.push(...subAgentResult.screens);
+                orderIndex += subAgentResult.screens.length;
               }
             } catch (err) {
               console.log(`[crawl] Sub-page ${subPage.name} failed: ${err}`);

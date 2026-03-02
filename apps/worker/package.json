@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
-    "@browserbasehq/stagehand": "^3.0.0",
+    "@browserbasehq/stagehand": "^3.1.0",
     "@supabase/supabase-js": "^2.49.0",
     "docx": "^9.0.2",
     "dotenv": "^16.4.0",
