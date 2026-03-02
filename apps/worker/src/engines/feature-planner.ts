@@ -259,8 +259,8 @@ export async function prescanPages(
   }
 
   // Summary
-  const worthIt = results.filter((r) => r.documentationValue >= 5).length;
-  const skipped = results.filter((r) => r.documentationValue < 5).length;
+  const worthIt = results.filter((r) => r.documentationValue >= 3).length;
+  const skipped = results.filter((r) => r.documentationValue < 3).length;
   console.log(`[pre-scan] Complete: ${worthIt} pages worth documenting, ${skipped} pages skipped`);
 
   return results;
@@ -444,7 +444,7 @@ export function selectFeatures(
         }
         continue;
       }
-      if (scan.documentationValue >= 5) {
+      if (scan.documentationValue >= 3) {
         worthDocumenting.push(c);
       } else {
         excluded.push({ route: c.route, score: scan.documentationValue, reason: scan.reason });

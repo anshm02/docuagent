@@ -65,9 +65,9 @@ export async function takeScreenshot(
 
 export async function waitForSettle(page: Page): Promise<void> {
   try {
-    await page.waitForLoadState("networkidle", 10_000);
+    await page.waitForLoadState("domcontentloaded", 5000);
   } catch {
-    // networkidle may not fire — that's ok
+    // may not fire — that's ok
   }
   await page.waitForTimeout(SETTLE_DELAY_MS);
 }

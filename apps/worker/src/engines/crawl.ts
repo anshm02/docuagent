@@ -242,7 +242,7 @@ export async function findLoginPage(
 
   // 1. Visit app URL — check if it already has login fields
   try {
-    await page.goto(appUrl, { waitUntil: "networkidle", timeoutMs: PAGE_TIMEOUT_MS });
+    await page.goto(appUrl, { waitUntil: "domcontentloaded", timeoutMs: PAGE_TIMEOUT_MS });
     await waitForSettle(page);
   } catch {
     // timeout OK, continue checking
@@ -274,7 +274,7 @@ export async function findLoginPage(
   for (const path of commonPaths) {
     try {
       const testUrl = `${baseUrl}${path}`;
-      await page.goto(testUrl, { waitUntil: "networkidle", timeoutMs: 10_000 });
+      await page.goto(testUrl, { waitUntil: "domcontentloaded", timeoutMs: 10_000 });
       const hasForm = await page.evaluate(() => {
         const d = (globalThis as any).document;
         const inputs = d.querySelectorAll('input[type="email"], input[type="password"], input[name="email"], input[name="password"]');
@@ -291,7 +291,7 @@ export async function findLoginPage(
 
   // 3. Look for login links on the page
   try {
-    await page.goto(appUrl, { waitUntil: "networkidle", timeoutMs: PAGE_TIMEOUT_MS });
+    await page.goto(appUrl, { waitUntil: "domcontentloaded", timeoutMs: PAGE_TIMEOUT_MS });
     const loginLink = await page.evaluate(() => {
       const d = (globalThis as any).document;
       const links = Array.from(d.querySelectorAll("a")) as any[];
@@ -484,7 +484,7 @@ async function authenticate(
   credentials: { username: string; password: string },
 ): Promise<boolean> {
   console.log(`[crawl] Navigating to login page: ${loginUrl}`);
-  await page.goto(loginUrl, { waitUntil: "networkidle", timeoutMs: PAGE_TIMEOUT_MS });
+  await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeoutMs: PAGE_TIMEOUT_MS });
   await waitForSettle(page);
 
   const priorUrl = page.url();
@@ -492,7 +492,7 @@ async function authenticate(
   for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt > 0) {
       console.log("[crawl] Retrying login...");
-      await page.goto(loginUrl, { waitUntil: "networkidle", timeoutMs: PAGE_TIMEOUT_MS });
+      await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeoutMs: PAGE_TIMEOUT_MS });
       await waitForSettle(page);
     }
 
@@ -799,7 +799,15 @@ function isOnSamePage(current: string, expected: string): boolean {
   try {
     const c = new URL(current);
     const e = new URL(expected);
-    return c.host === e.host && c.pathname === e.pathname;
+    if (c.host !== e.host) return false;
+    // Exact pathname match
+    if (c.pathname === e.pathname) return true;
+    // Sub-path match: /inbox/task/123 is a sub-page of /inbox
+    if (c.pathname.startsWith(e.pathname + '/')) return true;
+    // Hash routing: #/inbox vs #/today
+    if (c.hash && e.hash && c.hash !== e.hash) return false;
+    if (c.hash && e.hash && c.hash === e.hash) return true;
+    return false;
   } catch {
     return true;
   }
@@ -813,27 +821,49 @@ async function isPageLoading(page: Page): Promise<boolean> {
   try {
     return await page.evaluate(() => {
       const d = (globalThis as any).document;
-      const body = d.body;
 
-      // Check for loading indicators
-      const selectors = [
-        '[class*="loading"]', '[class*="spinner"]', '[class*="skeleton"]',
-        '[class*="Loading"]', '[class*="Spinner"]',
-        '.animate-pulse', '.animate-spin',
-        '[role="progressbar"]', '[aria-busy="true"]',
+      // Find the main content area (not sidebar/header)
+      const mainSelectors = [
+        'main', '[role="main"]', '.main-content', '#content',
+        '.content-area', '.page-content', '#main',
       ];
-      for (const sel of selectors) {
-        const el = d.querySelector(sel);
-        if (el && el.offsetHeight > 0 && el.offsetWidth > 0) return true;
+      let mainContent: any = null;
+      for (const sel of mainSelectors) {
+        mainContent = d.querySelector(sel);
+        if (mainContent) break;
       }
 
-      // Very little visible text = probably loading
-      const text = body.innerText?.trim() || "";
-      if (text.length < 50) return true;
+      // Fallback: largest non-nav div
+      if (!mainContent) {
+        const divs = Array.from(d.querySelectorAll('div')) as any[];
+        mainContent = divs
+          .filter((div: any) => !div.closest('nav, aside, header, footer, [role="navigation"]'))
+          .filter((div: any) => div.offsetWidth > 200 && div.offsetHeight > 100)
+          .sort((a: any, b: any) => (b.offsetWidth * b.offsetHeight) - (a.offsetWidth * a.offsetHeight))[0];
+      }
+      if (!mainContent) mainContent = d.body;
 
-      // Single centered image with no content = splash screen
-      const imgs = d.querySelectorAll("img");
-      if (imgs.length <= 2 && text.length < 100) return true;
+      // Check for spinners/loaders in main content
+      const loaderSelectors = [
+        '[class*="loading"]', '[class*="spinner"]', '[class*="skeleton"]',
+        '[class*="Loading"]', '[class*="Spinner"]', '[class*="loader"]', '[class*="Loader"]',
+        '.animate-pulse', '.animate-spin',
+        '[role="progressbar"]', '[aria-busy="true"]',
+        'svg[class*="spin"]', 'svg[class*="load"]',
+        'circle[class*="spin"]',
+      ];
+
+      for (const sel of loaderSelectors) {
+        const el = mainContent.querySelector(sel);
+        if (el) {
+          const rect = el.getBoundingClientRect();
+          if (rect.width > 10 && rect.height > 10) return true;
+        }
+      }
+
+      // Very little text in main content = probably loading
+      const mainText = (mainContent.innerText || '').replace(/\s+/g, ' ').trim();
+      if (mainText.length < 20) return true;
 
       return false;
     });
@@ -854,33 +884,27 @@ function isExternalApp(appUrl: string): boolean {
 // Agent system prompt for page exploration
 // ---------------------------------------------------------------------------
 
-const AGENT_SYSTEM_PROMPT = `You are a senior technical writer exploring a web application page to create documentation. You must deeply understand every page you visit.
+const AGENT_SYSTEM_PROMPT = `You are a senior technical writer exploring a web application page to document it for end users.
 
-YOUR TOOLS:
-- think: ALWAYS use this first to reason about what you see before acting
-- act: Perform a single action (click, type, select)
-- fillForm: Fill all form fields at once with realistic data
-- extract: Get structured data from the page
-- scroll: Scroll to see more content
-- wait: Wait for loading/animations to finish
-- screenshot: Take a screenshot
-- navback: Go back if you navigated away
+Your goal: deeply understand this page and interact with its most valuable elements to see how they work.
 
-WORKFLOW FOR EVERY PAGE:
-1. First, THINK: "What is this page? What can users do here? What would be most valuable to document?"
-2. If you see a loading spinner or skeleton, WAIT 3-5 seconds
+HOW TO EXPLORE:
+1. First THINK about what this page is for and what users need to learn.
+2. If you see a loading indicator, WAIT for it to finish.
 3. Interact with the most documentation-worthy elements:
-   - Forms → use fillForm with realistic data (Sarah Johnson, sarah@company.com, +1 415 555 0192, Q4 Planning Review)
-   - Chart → hover over a data point to show tooltip
-   - Modal trigger (Add/Create/Edit button) → click to open, fill any form inside
-   - Tabs → click to see different views
-   - Filters that change displayed data → use one
-   - Expandable sections → expand them
-4. If the page is read-only (displays data, logs, charts with no interactions), that is FINE — just observe and report
-5. NEVER interact with the header search bar, sidebar navigation, or global nav elements
-6. NEVER click Delete, Remove, Send, Invite, Share, or Pay buttons
-7. You MAY click Save, Create, Add, Submit, Update, Apply, Confirm buttons
-8. Maximum 8 actions per page. Stop when you've captured the most valuable interactions.`;
+   - Forms: fill fields with realistic data (Sarah Johnson, sarah@company.com, +1 415 555 0192, Q4 Planning Review)
+   - Buttons labeled Add/Create/Edit/New: click to open forms or modals
+   - Charts: hover to reveal tooltips with exact values
+   - Tabs or view toggles: click to see different content
+   - Filters or dropdowns that change displayed data: try one
+   - Expandable or collapsible sections: expand them
+   - Tasks or list items: click one to see its detail view
+4. You MAY click: Save, Create, Add, Submit, Update, Apply, Confirm
+5. Do NOT click: Delete, Remove, Send, Invite, Share, Pay
+6. Do NOT send messages, emails, or notifications to real people
+7. Stop after 5-6 meaningful interactions. Quality over quantity.
+
+You are free to explore whatever helps you understand the page. Report what this page does, what you interacted with, and what you learned.`;
 
 // ---------------------------------------------------------------------------
 // Safe agent execution with error handling
@@ -916,10 +940,45 @@ async function safeAgentExecute(
     }
     // Navigate back to correct page
     try {
-      await page.goto(featureUrl, { waitUntil: "networkidle", timeoutMs: 10000 });
+      await page.goto(featureUrl, { waitUntil: "domcontentloaded", timeoutMs: 10000 });
     } catch { /* even this failed, but continue */ }
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// SPA-friendly navigation helper
+// ---------------------------------------------------------------------------
+
+async function navigateToFeature(
+  page: Page,
+  stagehand: Stagehand,
+  featureUrl: string,
+  featureName: string,
+  appUrl: string,
+): Promise<void> {
+  const external = isExternalApp(appUrl);
+
+  // Strategy 1: Direct URL with domcontentloaded
+  try {
+    await page.goto(featureUrl, { waitUntil: "domcontentloaded", timeoutMs: 15000 });
+    await new Promise(r => setTimeout(r, external ? 5000 : 2000));
+    if (isOnSamePage(page.url(), featureUrl)) return;
+  } catch { /* try next */ }
+
+  // Strategy 2: Go to app root, then click the feature link
+  try {
+    await page.goto(appUrl, { waitUntil: "domcontentloaded", timeoutMs: 10000 });
+    await new Promise(r => setTimeout(r, 2000));
+    await stagehand.act(`Click the link or menu item for "${featureName}"`, { timeout: 10000 });
+    await new Promise(r => setTimeout(r, external ? 5000 : 2000));
+  } catch { /* try last resort */ }
+
+  // Strategy 3: Just go and wait
+  try {
+    await page.goto(featureUrl, { timeoutMs: 20000 });
+    await new Promise(r => setTimeout(r, 5000));
+  } catch { /* we tried everything */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -942,136 +1001,213 @@ async function agentFeatureCrawl(
   startOrderIndex: number,
   fullUrl: string,
   appUrl: string,
+  globalScreenshotHashes: Set<string>,
 ): Promise<AgentCrawlResult> {
   const startTime = Date.now();
   const external = isExternalApp(appUrl);
   const screenshots: { buffer: Buffer; description: string; filename: string }[] = [];
-  const allCapturedHashes = new Set<string>();
   const descriptions: string[] = ["hero (default state)"];
 
-  // Hash the hero screenshot
-  const heroHash = hashScreenshot(heroBuffer);
-  allCapturedHashes.add(heroHash);
+  // ─── MONITORING STATE ───
+  // The monitoring layer captures screenshots DURING agent exploration.
+  // Two-tier system:
+  //   Tier 1 (preferred): Screenshots where URL matches or is sub-path of feature URL
+  //   Tier 2 (fallback): Screenshots where URL doesn't match (agent navigated away)
+  // We keep the LAST valid candidate in each tier. Tier 1 always wins over Tier 2.
+  let tier1Candidate: Buffer | null = null; // On correct page
+  let tier2Candidate: Buffer | null = null; // Agent navigated away
+  let tier1Description: string = "";
+  let tier2Description: string = "";
+  let stepCount = 0;
 
-  // ---- Phase 2: Agent exploration with structured output ----
+  // ─── MONITORING CALLBACK ───
+  // Runs after EVERY agent action. Captures screenshots at the right moments
+  // without restricting the agent's behavior.
+  const monitorStep = async () => {
+    stepCount++;
+    try {
+      // Small delay for the page to render after the agent's action
+      await new Promise(r => setTimeout(r, 500));
+
+      // Take screenshot of current state
+      const buffer = await takeScreenshot(page);
+
+      // Check 1: Is this a loading screen? Skip.
+      const loading = await isPageLoading(page);
+      if (loading) {
+        console.log(`[monitor] Step ${stepCount}: loading screen, skipping`);
+        return;
+      }
+
+      // Check 2: Is this a login/auth page? Skip.
+      // (Catches session expiry during exploration)
+      const currentUrl = page.url();
+      if (isAuthPageUrl(currentUrl)) {
+        console.log(`[monitor] Step ${stepCount}: auth page detected, skipping`);
+        return;
+      }
+
+      // Check 3: Is this visually the same as the hero? Skip.
+      if (!isScreenshotDifferent(heroBuffer, buffer)) {
+        console.log(`[monitor] Step ${stepCount}: same as hero, skipping`);
+        return;
+      }
+
+      // Check 4: Is this a duplicate of any screenshot from any feature? Skip.
+      const hash = hashScreenshot(buffer);
+      if (globalScreenshotHashes.has(hash)) {
+        console.log(`[monitor] Step ${stepCount}: cross-feature duplicate, skipping`);
+        return;
+      }
+
+      // ALL CHECKS PASSED — assign to correct tier based on URL
+      const onFeaturePage = isOnSamePage(currentUrl, fullUrl);
+      if (onFeaturePage) {
+        tier1Candidate = buffer;
+        tier1Description = `${feature.name} after interaction (step ${stepCount})`;
+        console.log(`[monitor] Step ${stepCount}: ✓ Tier 1 candidate (on correct page)`);
+      } else {
+        tier2Candidate = buffer;
+        tier2Description = `${feature.name} after interaction (step ${stepCount})`;
+        console.log(`[monitor] Step ${stepCount}: ✓ Tier 2 candidate (navigated away to ${currentUrl})`);
+      }
+
+    } catch (err) {
+      // Monitoring must never crash the agent
+      console.log(`[monitor] Step ${stepCount}: capture failed (${err}), continuing`);
+    }
+  };
+
+  // ─── AGENT EXPLORATION ───
   console.log(`[crawl] Agent exploring "${feature.name}"...`);
 
   const timeout = new AbortController();
-  const timer = setTimeout(() => timeout.abort("Timeout"), external ? 180000 : 120000);
+  const timer = setTimeout(() => timeout.abort("Timeout"), external ? 120000 : 75000);
 
   let understanding: PageUnderstanding | null = null;
   try {
-    const result = await safeAgentExecute(
-      stagehand,
-      { model: "anthropic/claude-sonnet-4-6", systemPrompt: AGENT_SYSTEM_PROMPT },
-      {
-        instruction: `Explore the "${feature.name}" page. Understand its purpose, interact with its key elements, and report what you found and did.`,
-        maxSteps: 10,
-        signal: timeout.signal,
-        output: PageUnderstandingSchema,
+    const agent = stagehand.agent({
+      model: "anthropic/claude-sonnet-4-6",
+      systemPrompt: AGENT_SYSTEM_PROMPT,
+    });
+
+    const result = await agent.execute({
+      instruction: `Explore the "${feature.name}" page. Understand its purpose, interact with its key elements, and report what you found and did.`,
+      maxSteps: 7,
+      signal: timeout.signal,
+      output: PageUnderstandingSchema,
+      callbacks: {
+        onStepFinish: async () => {
+          await monitorStep();
+        },
       },
-      page,
-      fullUrl,
-    );
+    });
 
     if (result?.output) {
       understanding = result.output as unknown as PageUnderstanding;
       console.log(`[crawl] Agent explored ${feature.name}: ${result.message}`);
       console.log(`[crawl] Understanding: purpose="${understanding.purpose}", pageType="${understanding.pageType}", goals=${understanding.userGoals.length}, interactions=${understanding.interactionsPerformed.length}`);
     } else if (result) {
-      console.log(`[crawl] Agent completed but no structured output for ${feature.name}: ${result.message}`);
+      console.log(`[crawl] Agent completed ${feature.name} without structured output: ${result.message}`);
     }
   } catch (err: any) {
-    console.log(`[crawl] Agent error on ${feature.name}: ${err.message}`);
+    const msg = err.message || String(err);
+    if (msg.includes("aborted") || msg.includes("Timeout") || err.name === "AgentAbortError") {
+      console.log(`[crawl] Agent timed out for ${feature.name}`);
+    } else if (msg.includes("429") || msg.includes("rate_limit")) {
+      console.log(`[crawl] Rate limited during ${feature.name}. Waiting 60s...`);
+      await new Promise(r => setTimeout(r, 60000));
+    } else {
+      console.log(`[crawl] Agent error on ${feature.name}: ${msg}`);
+    }
+    // Even if agent failed/timed out, we may have captured valid screenshots in the monitoring layer
   } finally {
     clearTimeout(timer);
   }
 
-  // ---- Phase 3: Post-exploration screenshot with 3-layer verification ----
-  const currentUrl = page.url();
-  if (!isOnSamePage(currentUrl, fullUrl)) {
-    console.log(`[crawl] Agent navigated away from ${feature.name}. Going back.`);
-    try {
-      await page.goto(fullUrl, { waitUntil: "networkidle", timeoutMs: 15000 });
-      await new Promise((r) => setTimeout(r, external ? 5000 : 2000));
-    } catch { /* navigation failed */ }
-  }
+  // ─── COLLECT BEST SCREENSHOT ───
+  // Prefer Tier 1 (on correct page) over Tier 2 (navigated away)
+  const bestCandidate = tier1Candidate || tier2Candidate;
+  const candidateTier = tier1Candidate ? "Tier 1 (correct page)" : "Tier 2 (navigated away)";
 
-  const postBuffer = await takeScreenshot(page);
-
-  // Layer 1: Not a loading screen
-  const loading = await isPageLoading(page);
-  // Layer 2: Content area different from hero
-  const different = !loading && isScreenshotDifferent(heroBuffer, postBuffer);
-  // Layer 3: Not a cross-feature duplicate
-  const postHash = hashScreenshot(postBuffer);
-  const duplicate = allCapturedHashes.has(postHash);
-
-  if (!loading && different && !duplicate) {
-    allCapturedHashes.add(postHash);
-    screenshots.push({
-      buffer: postBuffer,
-      description: `${feature.name} after interaction`,
-      filename: `${feature.slug}-action-1.png`,
-    });
-    descriptions.push(`${feature.name} after interaction`);
-    console.log(`[crawl] ✓ Action screenshot captured for ${feature.name}`);
+  if (bestCandidate) {
+    const hash = hashScreenshot(bestCandidate);
+    if (!globalScreenshotHashes.has(hash)) {
+      globalScreenshotHashes.add(hash);
+      screenshots.push({
+        buffer: bestCandidate,
+        description: `${feature.name} after interaction`,
+        filename: `${feature.slug}-action-1.png`,
+      });
+      descriptions.push(`${feature.name} after interaction`);
+      console.log(`[crawl] ✓ Action screenshot selected for ${feature.name} — ${candidateTier}, step ${stepCount}`);
+    } else {
+      console.log(`[crawl] ✗ Best candidate was a cross-feature duplicate for ${feature.name}`);
+    }
   } else {
-    console.log(`[crawl] ✗ Post-exploration screenshot skipped: ${loading ? "loading" : !different ? "identical" : "duplicate"}`);
+    console.log(`[crawl] ✗ No valid action screenshot for ${feature.name} (hero only)`);
   }
 
-  // ---- Phase 4: Form submission and result capture ----
-  if (understanding?.hasSubmittableForm && !understanding?.isReadOnly) {
+  // ─── FORM SUBMISSION PASS ───
+  // Only if the agent found a form AND we have fewer than 2 action screenshots
+  if (understanding?.hasSubmittableForm && !understanding?.isReadOnly && screenshots.length < 2) {
     console.log(`[crawl] Attempting form submission for ${feature.name}...`);
-    try {
-      await page.goto(fullUrl, { waitUntil: "networkidle", timeoutMs: 15000 });
-      await new Promise((r) => setTimeout(r, external ? 5000 : 2000));
-    } catch { /* navigation timeout ok */ }
+
+    // Navigate back to clean state for a fresh form fill
+    await navigateToFeature(page, stagehand, fullUrl, feature.name, appUrl);
 
     const submitTimeout = new AbortController();
-    const submitTimer = setTimeout(() => submitTimeout.abort(), external ? 90000 : 60000);
+    const submitTimer = setTimeout(() => submitTimeout.abort(), 45000);
 
     try {
-      const submitResult = await safeAgentExecute(
-        stagehand,
-        {
-          model: "anthropic/claude-sonnet-4-6",
-          systemPrompt: "You fill forms and submit them. Use realistic data. Never send messages, delete data, or make payments.",
-        },
-        {
-          instruction: "Fill all form fields with realistic data, then click the Save/Submit/Create button. If no safe submit button exists, do nothing.",
-          maxSteps: 8,
-          signal: submitTimeout.signal,
-        },
-        page,
-        fullUrl,
-      );
+      const submitAgent = stagehand.agent({
+        model: "anthropic/claude-sonnet-4-6",
+        systemPrompt: `You fill forms and submit them. Use realistic data:
+- Names: Sarah Johnson, Alex Chen
+- Emails: sarah@company.com
+- Phone: +1 (415) 555-0192
+- Dates: use near-future dates
+- Titles: Q4 Planning Review
+- Descriptions: Review quarterly objectives and align on priorities.
+After clicking the submit button, wait 3 seconds for the result to appear.
+NEVER click Delete, Remove, Send, Invite, Share, or Pay.`,
+      });
 
-      if (submitResult) {
-        await new Promise((r) => setTimeout(r, 3000));
+      await submitAgent.execute({
+        instruction: "Fill all form fields with realistic data, then click the Save/Submit/Create/Update button. If no safe button exists, do nothing.",
+        maxSteps: 5,
+        signal: submitTimeout.signal,
+      });
 
-        const resultBuffer = await takeScreenshot(page);
-        const resultHash = hashScreenshot(resultBuffer);
-        const resultLoading = await isPageLoading(page);
-        if (!resultLoading && isScreenshotDifferent(heroBuffer, resultBuffer) && !allCapturedHashes.has(resultHash)) {
-          allCapturedHashes.add(resultHash);
-          screenshots.push({
-            buffer: resultBuffer,
-            description: `${feature.name} after submission`,
-            filename: `${feature.slug}-result-1.png`,
-          });
-          descriptions.push(`${feature.name} after submission`);
-          console.log(`[crawl] ✓ Result screenshot captured for ${feature.name}`);
-        }
+      // Wait for the result to render
+      await new Promise(r => setTimeout(r, 3000));
+
+      // Capture result — only if we're still on a non-login, non-loading page with different content
+      const resultBuffer = await takeScreenshot(page);
+      const resultLoading = await isPageLoading(page);
+      const resultAuth = isAuthPageUrl(page.url());
+      const resultHash = hashScreenshot(resultBuffer);
+
+      if (!resultLoading && !resultAuth &&
+          isScreenshotDifferent(heroBuffer, resultBuffer) &&
+          !globalScreenshotHashes.has(resultHash)) {
+        globalScreenshotHashes.add(resultHash);
+        screenshots.push({
+          buffer: resultBuffer,
+          description: `${feature.name} after form submission`,
+          filename: `${feature.slug}-result-1.png`,
+        });
+        descriptions.push(`${feature.name} after form submission`);
+        console.log(`[crawl] ✓ Form result screenshot captured for ${feature.name}`);
       }
     } catch {
-      /* timeout or failure — acceptable */
+      // Timeout or failure — we still have hero + potentially the monitoring screenshot
     } finally {
       clearTimeout(submitTimer);
     }
   }
 
-  // ---- Store screenshots ----
+  // ─── STORE SCREENSHOTS ───
   const screens: ScreenRecord[] = [];
   let orderIndex = startOrderIndex;
 
@@ -1082,8 +1218,8 @@ async function agentFeatureCrawl(
     const dom = await cleanDom(page);
     const record: ScreenRecord = {
       id: "",
-      url: page.url(),
-      routePath: new URL(page.url()).pathname,
+      url: fullUrl, // Always use the FEATURE URL, not current page URL
+      routePath: new URL(fullUrl).pathname,
       navPath: `${feature.name} (${shot.description})`,
       screenshotUrl,
       domHtml: dom,
@@ -1111,7 +1247,7 @@ async function agentFeatureCrawl(
   }
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  console.log(`[crawl] Feature "${feature.name}" agent crawl: ${screens.length} action screenshots in ${elapsed}s`);
+  console.log(`[crawl] Feature "${feature.name}" complete: ${screens.length} action screenshots in ${elapsed}s`);
 
   return { screens, understanding, screenshotDescriptions: descriptions };
 }
@@ -1175,7 +1311,7 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
     } else {
       // No login required — just navigate to app URL
       await page.goto(config.appUrl, {
-        waitUntil: "networkidle",
+        waitUntil: "domcontentloaded",
         timeoutMs: PAGE_TIMEOUT_MS,
       });
       await waitForSettle(page);
@@ -1184,6 +1320,7 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
     // ----- Feature crawl -----
     const { features } = config;
     const featureUnderstandings: FeatureUnderstanding[] = [];
+    const globalScreenshotHashes = new Set<string>();
 
     if (!features || features.length === 0) {
       console.log("[crawl] No features to crawl");
@@ -1223,24 +1360,7 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
           ? feature.route
           : `${config.appUrl.replace(/\/$/, "")}${feature.route}`;
 
-        try {
-          await page.goto(fullUrl, {
-            waitUntil: "networkidle",
-            timeoutMs: PAGE_TIMEOUT_MS,
-          });
-        } catch {
-          // Timeout OK, try clicking the sidebar link instead
-          console.log(`[crawl] Direct navigation timeout, trying sidebar click for ${feature.name}`);
-          try {
-            await stagehand.act(
-              `Click the sidebar or navigation link labeled "${feature.name}"`,
-              { timeout: 15_000 },
-            );
-          } catch {
-            console.log(`[crawl] Sidebar click also failed for ${feature.name}`);
-          }
-        }
-        await waitForSettle(page);
+        await navigateToFeature(page, stagehand, fullUrl, feature.name, config.appUrl);
 
         // Check page health
         const healthIssue = await checkPageHealth(page);
@@ -1264,7 +1384,7 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
               return;
             }
             // Retry navigation
-            await page.goto(fullUrl, { waitUntil: "networkidle", timeoutMs: PAGE_TIMEOUT_MS });
+            await page.goto(fullUrl, { waitUntil: "domcontentloaded", timeoutMs: PAGE_TIMEOUT_MS });
             await waitForSettle(page);
           } else if (hasLoginFields) {
             errors.push({ featureId: feature.id, action: "navigate", error: "Session expired, re-auth cap reached" });
@@ -1319,6 +1439,8 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
         if (heroResult) {
           screens.push(heroResult.record);
           orderIndex++;
+          const heroHashBuffer = await takeScreenshot(page);
+          globalScreenshotHashes.add(hashScreenshot(heroHashBuffer));
         }
 
         // --- AGENT EXPLORATION: autonomous page exploration + screenshot capture ---
@@ -1336,6 +1458,7 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
             orderIndex,
             fullUrl,
             config.appUrl,
+            globalScreenshotHashes,
           );
 
           screens.push(...agentResult.screens);
@@ -1367,7 +1490,7 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
             await broadcastProgress(config.jobId, "info", `Capturing ${feature.name} — ${subPage.name}`);
 
             try {
-              await page.goto(subUrl, { waitUntil: "networkidle", timeoutMs: PAGE_TIMEOUT_MS });
+              await page.goto(subUrl, { waitUntil: "domcontentloaded", timeoutMs: PAGE_TIMEOUT_MS });
               await waitForSettle(page);
               await dismissOverlays(page, stagehand);
               await waitForContentLoaded(page);
@@ -1397,6 +1520,7 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
                 const subAgentResult = await agentFeatureCrawl(
                   stagehand, page, { ...feature, name: subPage.name },
                   config.jobId, null, subHero, orderIndex, subUrl, config.appUrl,
+                  globalScreenshotHashes,
                 );
                 screens.push(...subAgentResult.screens);
                 orderIndex += subAgentResult.screens.length;
@@ -1433,11 +1557,19 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
         // After a timeout, navigate back to app root to reset browser state
         if (isTimeout) {
           try {
-            await page.goto(config.appUrl, { waitUntil: "networkidle", timeoutMs: 10000 });
+            await page.goto(config.appUrl, { waitUntil: "domcontentloaded", timeoutMs: 10000 });
           } catch {
             // Even navigation failed, but we continue
           }
         }
+      }
+
+      // Rate limit cooldown between features
+      if (fi < features.length - 1) {
+        const cooldown = isExternalApp(config.appUrl) ? 45000 : 15000;
+        console.log(`[crawl] Rate limit cooldown: ${cooldown / 1000}s before next feature...`);
+        await broadcastProgress(config.jobId, "info", "Preparing next feature...");
+        await new Promise(r => setTimeout(r, cooldown));
       }
     }
 
