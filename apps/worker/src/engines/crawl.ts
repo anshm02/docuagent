@@ -19,7 +19,7 @@ import {
   PAGE_TIMEOUT_MS,
   FEATURE_TIMEOUT_MS,
 } from "@docuagent/shared";
-// claude.js imports no longer needed for crawl — agent() handles AI calls internally
+import { claudeVisionMulti } from "../lib/claude.js";
 import crypto from "crypto";
 
 // ---------------------------------------------------------------------------
@@ -791,6 +791,38 @@ function hashScreenshot(buffer: Buffer): string {
   return crypto.createHash("md5").update(sample).digest("hex");
 }
 
+async function isPerceptuallyIdentical(
+  heroBuffer: Buffer,
+  candidateBuffer: Buffer,
+): Promise<boolean> {
+  const sizeDiff = Math.abs(heroBuffer.length - candidateBuffer.length) / Math.max(heroBuffer.length, candidateBuffer.length);
+  if (sizeDiff > 0.1) return false;
+
+  try {
+    const heroBase64 = heroBuffer.toString("base64");
+    const candidateBase64 = candidateBuffer.toString("base64");
+
+    const response = await claudeVisionMulti(
+      "Rate the visual similarity between these two screenshots. 10 = identical content (ignore minor rendering differences like cursor or highlight changes). 1 = completely different content (different forms, data, or page state). Reply with ONLY a single number.",
+      [
+        { mediaType: "image/png", data: heroBase64 },
+        { mediaType: "image/png", data: candidateBase64 },
+      ],
+      {
+        maxTokens: 5,
+        system: "You compare screenshots. Answer only with a number 1-10.",
+        model: "claude-haiku-4-5-20251001",
+      },
+    );
+
+    const score = parseInt(response.trim(), 10);
+    if (isNaN(score)) return false;
+    return score >= 8;
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // URL verification — check if we're still on the right page
 // ---------------------------------------------------------------------------
@@ -1131,18 +1163,23 @@ async function agentFeatureCrawl(
   const candidateTier = tier1Candidate ? "Tier 1 (correct page)" : "Tier 2 (navigated away)";
 
   if (bestCandidate) {
-    const hash = hashScreenshot(bestCandidate);
-    if (!globalScreenshotHashes.has(hash)) {
-      globalScreenshotHashes.add(hash);
-      screenshots.push({
-        buffer: bestCandidate,
-        description: `${feature.name} after interaction`,
-        filename: `${feature.slug}-action-1.png`,
-      });
-      descriptions.push(`${feature.name} after interaction`);
-      console.log(`[crawl] ✓ Action screenshot selected for ${feature.name} — ${candidateTier}, step ${stepCount}`);
+    const isIdentical = await isPerceptuallyIdentical(heroBuffer, bestCandidate);
+    if (isIdentical) {
+      console.log(`[crawl] ✗ Action screenshot perceptually identical to hero for ${feature.name}, discarding`);
     } else {
-      console.log(`[crawl] ✗ Best candidate was a cross-feature duplicate for ${feature.name}`);
+      const hash = hashScreenshot(bestCandidate);
+      if (!globalScreenshotHashes.has(hash)) {
+        globalScreenshotHashes.add(hash);
+        screenshots.push({
+          buffer: bestCandidate,
+          description: `${feature.name} after interaction`,
+          filename: `${feature.slug}-action-1.png`,
+        });
+        descriptions.push(`${feature.name} after interaction`);
+        console.log(`[crawl] ✓ Action screenshot selected for ${feature.name} — ${candidateTier}, step ${stepCount}`);
+      } else {
+        console.log(`[crawl] ✗ Best candidate was a cross-feature duplicate for ${feature.name}`);
+      }
     }
   } else {
     console.log(`[crawl] ✗ No valid action screenshot for ${feature.name} (hero only)`);

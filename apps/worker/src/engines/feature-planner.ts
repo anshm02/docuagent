@@ -12,7 +12,7 @@ import type {
   FeatureSelectionResult,
   PageScanResult,
 } from "@docuagent/shared";
-import { MAX_PRESCAN_CANDIDATES } from "@docuagent/shared";
+import { MAX_PRESCAN_CANDIDATES, MAX_FREE_TIER_FEATURES } from "@docuagent/shared";
 import { claudeVision, parseJsonResponse } from "../lib/claude.js";
 import { waitForSettle } from "../lib/stagehand.js";
 
@@ -164,6 +164,7 @@ CRITICAL RULES:
 - The more UNIQUE and USEFUL content visible on the page, the higher the score
 - Pages that look like they'd actually help a user learn the product = high score
 - Pages that are just empty shells waiting for data = low score
+- If this page is the first page users see after login (the post-login landing page), or if it shows a badge or count indicating active items that need daily attention, score it 9-10. These are the pages users visit most frequently and are the most important to document.
 
 Return ONLY valid JSON. No markdown, no explanation, no backticks.
 {"score": 8, "reason": "Project management board with Kanban columns, filters, and real task cards - core product feature", "suggestedName": "Project Board", "pageType": "core_feature"}`;
@@ -627,7 +628,28 @@ export function selectFeatures(
 
   // Select top N features
   const selected: Feature[] = allFeatures.slice(0, maxFeatures).map(({ score: _score, ...rest }) => rest);
-  const additionalFromAll = allFeatures.slice(maxFeatures);
+
+  // Pad to MAX_FREE_TIER_FEATURES if we have fewer than the target
+  if (selected.length < MAX_FREE_TIER_FEATURES) {
+    console.log(
+      `[feature-planner]   Only ${selected.length} features selected, padding to ${MAX_FREE_TIER_FEATURES}`,
+    );
+    const selectedRoutes = new Set(selected.map((f) => f.route));
+    const remaining = allFeatures
+      .filter((c) => !selectedRoutes.has(c.route))
+      .sort((a, b) => b.score - a.score);
+
+    while (selected.length < MAX_FREE_TIER_FEATURES && remaining.length > 0) {
+      const next = remaining.shift()!;
+      const { score: _padScore, ...rest } = next;
+      console.log(`[feature-planner]   Padding with: ${next.name} (score: ${next.score})`);
+      selected.push(rest);
+    }
+  }
+
+  const additionalFromAll = allFeatures.filter(
+    (f) => !selected.some((s) => s.route === f.route),
+  );
   const additional = additionalFromAll.map((f) => ({
     title: f.name,
     description: f.description,

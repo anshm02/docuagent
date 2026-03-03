@@ -43,6 +43,37 @@ export interface MarkdownGenResult {
 // Helpers
 // ---------------------------------------------------------------------------
 
+function validateCrossReferences(
+  markdownContent: string,
+  validFilenames: Set<string>,
+): string {
+  return markdownContent.replace(
+    /\[([^\]]+)\]\(\.\/([^)]+\.md)\)/g,
+    (match: string, displayText: string, filename: string) => {
+      if (validFilenames.has(filename)) {
+        return match;
+      }
+      console.log(`[markdown] Removing dead link to ./${filename}`);
+      return displayText;
+    },
+  );
+}
+
+function cleanAppNameForTitle(name: string): string {
+  // If appName contains a separator (–, —, |, or spaced dash), it likely
+  // includes a page/feature prefix from the detected page title
+  // (e.g., "Inbox – Todoist"). Extract just the app name (the suffix part).
+  const parts = name.split(/\s*[–—|]\s*/);
+  if (parts.length > 1) {
+    return parts[parts.length - 1].trim() || name;
+  }
+  const dashParts = name.split(/\s+-\s+/);
+  if (dashParts.length > 1) {
+    return dashParts[dashParts.length - 1].trim() || name;
+  }
+  return name;
+}
+
 function slugify(text: string): string {
   return text
     .toLowerCase()
@@ -434,8 +465,9 @@ function buildIndexMarkdown(
   features: { title: string; slug: string; description: string }[],
 ): string {
   const lines: string[] = [];
+  const cleanName = cleanAppNameForTitle(appName);
 
-  lines.push(`# ${appName} Documentation`);
+  lines.push(`# ${cleanName} Documentation`);
   lines.push("");
   lines.push(overview);
   lines.push("");
@@ -755,8 +787,15 @@ export async function runMarkdownGenerator(
     }
   }
 
-  // Upload feature markdown files (after review)
+  // Build set of valid .md filenames for cross-reference validation
+  const validFilenames = new Set<string>(["index.md"]);
   for (const fc of featureContents) {
+    validFilenames.add(`${fc.feature.slug}.md`);
+  }
+
+  // Validate cross-references and upload feature markdown files (after review)
+  for (const fc of featureContents) {
+    fc.markdown = validateCrossReferences(fc.markdown, validFilenames);
     const featurePath = `${basePath}/${fc.feature.slug}.md`;
     await uploadFile("documents", featurePath, fc.markdown, "text/markdown");
     mdFiles.push({
@@ -792,12 +831,13 @@ export async function runMarkdownGenerator(
     };
   });
 
-  const indexMd = buildIndexMarkdown(
+  let indexMd = buildIndexMarkdown(
     config.appName,
     config.appUrl,
     overview,
     indexFeatures,
   );
+  indexMd = validateCrossReferences(indexMd, validFilenames);
   await uploadFile(
     "documents",
     `${basePath}/index.md`,

@@ -61,10 +61,11 @@ export async function claudeVision(prompt: string, imageBase64: string, options?
   maxTokens?: number;
   temperature?: number;
   system?: string;
+  model?: string;
 }): Promise<string> {
   async function attempt(): Promise<string> {
     const response = await getClient().messages.create({
-      model: CLAUDE_MODEL,
+      model: options?.model || CLAUDE_MODEL,
       max_tokens: options?.maxTokens ?? 4096,
       temperature: options?.temperature ?? 0,
       ...(options?.system ? { system: options.system } : {}),
@@ -106,6 +107,7 @@ export async function claudeVisionMulti(
     maxTokens?: number;
     temperature?: number;
     system?: string;
+    model?: string;
   },
 ): Promise<string> {
   async function attempt(): Promise<string> {
@@ -125,7 +127,7 @@ export async function claudeVisionMulti(
     ];
 
     const response = await getClient().messages.create({
-      model: CLAUDE_MODEL,
+      model: options?.model || CLAUDE_MODEL,
       max_tokens: options?.maxTokens ?? 4096,
       temperature: options?.temperature ?? 0,
       ...(options?.system ? { system: options.system } : {}),
