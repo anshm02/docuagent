@@ -160,7 +160,81 @@ async function generateFeaturePageContent(
       };
     });
 
+  // Collect code context from hero screen
+  const heroScreen = screens.find(
+    (s) => s.nav_path && !s.nav_path.includes("("),
+  );
+  const codeContext = heroScreen?.code_context ?? null;
+
+  // Build enriched context from app understanding
+  const featureUnderstanding = appUnderstanding?.features.find(
+    (f) => f.slug === feature.slug || f.name === feature.name,
+  );
+
   if (screenAnalyses.length === 0) {
+    // No analyzed screens — use hero screenshot + agent exploration data
+    const heroRef = screens.length > 0 ? `screen_${screens[0].order_index}` : "";
+    const heroFilename = screenshotFilenames.get(heroRef) ?? "";
+
+    if (featureUnderstanding) {
+      // Generate AI content using agent exploration data
+      const prompt = featureProsePrompt({
+        featureName: feature.name,
+        featureSlug: feature.slug,
+        screenAnalyses: [],
+        otherFeatures,
+        prdSummary,
+        codeContext,
+        featureUnderstanding: {
+          purpose: featureUnderstanding.purpose,
+          userGoals: featureUnderstanding.userGoals,
+          connectedFeatures: featureUnderstanding.connectedFeatures,
+        },
+      });
+
+      try {
+        const raw = await claudeText(prompt, { maxTokens: 4000, temperature: 0 });
+        const parsed = parseJsonResponse<{
+          title: string;
+          intro: string;
+          hero_screenshot_ref?: string;
+          action_groups: {
+            heading: string;
+            steps: { action: string; detail?: string }[];
+            screenshot_ref?: string | null;
+            outcome?: string;
+          }[];
+          permission_notes?: string[];
+          fields?: {
+            label: string;
+            type: string;
+            required: boolean;
+            description: string;
+          }[];
+          tips?: string[];
+        }>(raw);
+
+        return {
+          title: parsed.title || feature.name,
+          slug: slugify(parsed.title || feature.name),
+          intro: parsed.intro,
+          action_groups: (parsed.action_groups ?? []).map((ag) => ({
+            ...ag,
+            screenshot_ref: ag.screenshot_ref ?? undefined,
+          })),
+          permission_notes: parsed.permission_notes ?? [],
+          fields: parsed.fields ?? [],
+          hero_screenshot_ref: heroFilename,
+          tips: parsed.tips ?? [],
+        };
+      } catch (err) {
+        console.error(
+          `[md-gen] AI fallback generation failed for "${feature.name}":`,
+          err,
+        );
+      }
+    }
+
     return {
       title: feature.name,
       slug: slugify(feature.name),
@@ -173,20 +247,9 @@ async function generateFeaturePageContent(
       ],
       permission_notes: [],
       fields: [],
-      hero_screenshot_ref: "",
+      hero_screenshot_ref: heroFilename,
     };
   }
-
-  // Collect code context from hero screen
-  const heroScreen = screens.find(
-    (s) => s.nav_path && !s.nav_path.includes("("),
-  );
-  const codeContext = heroScreen?.code_context ?? null;
-
-  // Build enriched context from app understanding
-  const featureUnderstanding = appUnderstanding?.features.find(
-    (f) => f.slug === feature.slug || f.name === feature.name,
-  );
 
   const prompt = featureProsePrompt({
     featureName: feature.name,
@@ -704,12 +767,20 @@ export async function runMarkdownGenerator(
     "Generating documentation content with AI...",
   );
 
-  // Group screens by feature
+  // Group screens by feature — analyzed screens only (for screen analysis data)
   const featureMap = new Map<string, Screen[]>();
   for (const screen of analyzedScreens) {
     const fid = screen.journey_id ?? "unknown";
     if (!featureMap.has(fid)) featureMap.set(fid, []);
     featureMap.get(fid)!.push(screen);
+  }
+
+  // Also group ALL screens (including non-analyzed) — for fallback when analysis failed
+  const allScreensMap = new Map<string, Screen[]>();
+  for (const screen of screens) {
+    const fid = screen.journey_id ?? "unknown";
+    if (!allScreensMap.has(fid)) allScreensMap.set(fid, []);
+    allScreensMap.get(fid)!.push(screen);
   }
 
   // Build other-features list for cross-references
@@ -728,20 +799,32 @@ export async function runMarkdownGenerator(
 
   for (const feature of config.features) {
     const fScreens = featureMap.get(feature.id) ?? [];
-    if (fScreens.length === 0) {
+    const allFScreens = allScreensMap.get(feature.id) ?? [];
+
+    if (fScreens.length === 0 && allFScreens.length === 0) {
       console.log(
-        `[md-gen] No analyzed screens for feature: ${feature.name}, skipping`,
+        `[md-gen] No screens at all for feature: ${feature.name}, skipping`,
       );
       continue;
     }
 
-    console.log(
-      `[md-gen] Generating markdown for feature: ${feature.name} (${fScreens.length} screens)`,
-    );
+    if (fScreens.length === 0 && allFScreens.length > 0) {
+      console.log(
+        `[md-gen] Feature "${feature.name}" has no analyzed screens — generating from agent exploration data`,
+      );
+    } else {
+      console.log(
+        `[md-gen] Generating markdown for feature: ${feature.name} (${fScreens.length} screens)`,
+      );
+    }
+
     await broadcastProgress(
       config.jobId,
       `Writing feature page: ${feature.name}`,
     );
+
+    // Use analyzed screens if available, otherwise pass all screens (for hero screenshot ref)
+    const screensToUse = fScreens.length > 0 ? fScreens : allFScreens;
 
     // Pass other features (excluding self) for cross-references
     const otherFeatures = allFeatureRefs.filter(
@@ -750,7 +833,7 @@ export async function runMarkdownGenerator(
 
     const content = await generateFeaturePageContent(
       feature,
-      fScreens,
+      screensToUse,
       config.prdSummary,
       otherFeatures,
       screenshotFilenames,

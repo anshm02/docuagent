@@ -791,12 +791,31 @@ function hashScreenshot(buffer: Buffer): string {
   return crypto.createHash("md5").update(sample).digest("hex");
 }
 
-async function isPerceptuallyIdentical(
+async function isPaywallModal(screenshotBuffer: Buffer): Promise<boolean> {
+  try {
+    const base64 = screenshotBuffer.toString("base64");
+    const response = await claudeVisionMulti(
+      "Does this screenshot show a paywall, upsell, upgrade, subscription, or \"try pro/premium\" modal overlay? Look for: trial offers, pricing information, subscription plans, \"upgrade\" or \"try free\" buttons, billing forms. Answer YES if any of these are present as a modal/dialog/overlay. Answer NO if this is a normal application page. Reply with ONLY YES or NO.",
+      [{ mediaType: "image/png", data: base64 }],
+      {
+        maxTokens: 5,
+        system: "You detect paywall and upsell modals in screenshots. Answer only YES or NO.",
+        model: "claude-haiku-4-5-20251001",
+      },
+    );
+    const answer = response.trim().toUpperCase();
+    return answer === "YES";
+  } catch {
+    return false;
+  }
+}
+
+async function getPerceptualSimilarity(
   heroBuffer: Buffer,
   candidateBuffer: Buffer,
-): Promise<boolean> {
+): Promise<number> {
   const sizeDiff = Math.abs(heroBuffer.length - candidateBuffer.length) / Math.max(heroBuffer.length, candidateBuffer.length);
-  if (sizeDiff > 0.1) return false;
+  if (sizeDiff > 0.1) return 0;
 
   try {
     const heroBase64 = heroBuffer.toString("base64");
@@ -816,10 +835,9 @@ async function isPerceptuallyIdentical(
     );
 
     const score = parseInt(response.trim(), 10);
-    if (isNaN(score)) return false;
-    return score >= 8;
+    return isNaN(score) ? 0 : score;
   } catch {
-    return false;
+    return 0;
   }
 }
 
@@ -1079,6 +1097,13 @@ async function agentFeatureCrawl(
         return;
       }
 
+      // Check 2.5: Is this a paywall/upsell modal? Skip.
+      const isPaywall = await isPaywallModal(buffer);
+      if (isPaywall) {
+        console.log(`[monitor] Step ${stepCount}: paywall/upsell modal detected, skipping`);
+        return;
+      }
+
       // Check 3: Is this visually the same as the hero? Skip.
       if (!isScreenshotDifferent(heroBuffer, buffer)) {
         console.log(`[monitor] Step ${stepCount}: same as hero, skipping`);
@@ -1163,10 +1188,11 @@ async function agentFeatureCrawl(
   const candidateTier = tier1Candidate ? "Tier 1 (correct page)" : "Tier 2 (navigated away)";
 
   if (bestCandidate) {
-    const isIdentical = await isPerceptuallyIdentical(heroBuffer, bestCandidate);
-    if (isIdentical) {
-      console.log(`[crawl] ✗ Action screenshot perceptually identical to hero for ${feature.name}, discarding`);
+    const similarity = await getPerceptualSimilarity(heroBuffer, bestCandidate);
+    if (similarity >= 9) {
+      console.log(`[crawl] ✗ Action screenshot too similar to hero (${similarity}/10) for ${feature.name}, discarding`);
     } else {
+      console.log(`[crawl] ✓ Action screenshot accepted (similarity: ${similarity}/10) for ${feature.name}`);
       const hash = hashScreenshot(bestCandidate);
       if (!globalScreenshotHashes.has(hash)) {
         globalScreenshotHashes.add(hash);
