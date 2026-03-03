@@ -795,11 +795,11 @@ async function isPaywallModal(screenshotBuffer: Buffer): Promise<boolean> {
   try {
     const base64 = screenshotBuffer.toString("base64");
     const response = await claudeVisionMulti(
-      "Does this screenshot show a paywall, upsell, upgrade, subscription, or \"try pro/premium\" modal overlay? Look for: trial offers, pricing information, subscription plans, \"upgrade\" or \"try free\" buttons, billing forms. Answer YES if any of these are present as a modal/dialog/overlay. Answer NO if this is a normal application page. Reply with ONLY YES or NO.",
+      "Look at this screenshot structurally. Is there a modal dialog, popup, or overlay COVERING the main content area of the page? A modal overlay has these characteristics: it darkens or blurs the background, it has a visible close button (X), it blocks interaction with the page behind it, and it is centered or floating above the content.\n\nIMPORTANT: Buttons, banners, or links in the SIDEBAR or HEADER that say \"upgrade\", \"try pro\", or \"start trial\" are NORMAL UI — they do NOT count. Only a floating modal/dialog/overlay blocking the main content counts.\n\nAnswer YES only if a modal overlay is covering the main content. Answer NO if the main content area is visible and not blocked. Reply with ONLY YES or NO.",
       [{ mediaType: "image/png", data: base64 }],
       {
         maxTokens: 5,
-        system: "You detect paywall and upsell modals in screenshots. Answer only YES or NO.",
+        system: "You detect modal overlays in web application screenshots. Answer only YES or NO.",
         model: "claude-haiku-4-5-20251001",
       },
     );
