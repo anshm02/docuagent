@@ -950,9 +950,11 @@ HOW TO EXPLORE:
    - Expandable or collapsible sections: expand them
    - Tasks or list items: click one to see its detail view
 4. You MAY click: Save, Create, Add, Submit, Update, Apply, Confirm
-5. Do NOT click: Delete, Remove, Send, Invite, Share, Pay
-6. Do NOT send messages, emails, or notifications to real people
-7. Stop after 5-6 meaningful interactions. Quality over quantity.
+5. Do NOT click any button related to: Delete, Remove, Send, Invite, Share, Pay, Subscribe, Upgrade, Buy, Purchase, Start trial, Start free trial, Try Pro, Try for free, Checkout, Place order, Connect account, Activate, Import, Sync, Enable, Authorize, Link account, Sign up for, billing, payment, or subscription.
+6. Do NOT send messages, emails, invitations, or notifications to real people.
+7. Do NOT fill in payment forms, credit card fields, or billing addresses.
+8. If you accidentally open a payment, subscription, or upgrade modal, close it immediately and move on.
+9. Stop after 5-6 meaningful interactions. Quality over quantity.
 
 You are free to explore whatever helps you understand the page. Report what this page does, what you interacted with, and what you learned.`;
 
@@ -1252,8 +1254,8 @@ NEVER click Delete, Remove, Send, Invite, Share, or Pay.`,
       const resultHash = hashScreenshot(resultBuffer);
 
       if (!resultLoading && !resultAuth &&
-          isScreenshotDifferent(heroBuffer, resultBuffer) &&
-          !globalScreenshotHashes.has(resultHash)) {
+        isScreenshotDifferent(heroBuffer, resultBuffer) &&
+        !globalScreenshotHashes.has(resultHash)) {
         globalScreenshotHashes.add(resultHash);
         screenshots.push({
           buffer: resultBuffer,
@@ -1418,183 +1420,183 @@ export async function runCrawl(config: CrawlConfig): Promise<CrawlResult> {
         // Wrap the entire feature crawl in a hard timeout
         await Promise.race([
           (async () => {
-        // Navigate to the feature's page
-        const fullUrl = feature.route.startsWith("http")
-          ? feature.route
-          : `${config.appUrl.replace(/\/$/, "")}${feature.route}`;
+            // Navigate to the feature's page
+            const fullUrl = feature.route.startsWith("http")
+              ? feature.route
+              : `${config.appUrl.replace(/\/$/, "")}${feature.route}`;
 
-        await navigateToFeature(page, stagehand, fullUrl, feature.name, config.appUrl);
+            await navigateToFeature(page, stagehand, fullUrl, feature.name, config.appUrl);
 
-        // Check page health
-        const healthIssue = await checkPageHealth(page);
-        if (healthIssue) {
-          console.log(`[crawl] Skipped ${feature.name}: ${healthIssue}`);
-          await broadcastProgress(config.jobId, "info", `Skipped ${feature.name}: ${healthIssue}`);
-          return;
-        }
-
-        // Check for session expiry
-        const currentUrl = page.url();
-        if (isRedirectedToLogin(currentUrl, config.loginUrl)) {
-          const hasLoginFields = await hasActualLoginForm(page);
-          if (hasLoginFields && reAuthCount < MAX_REAUTHS && config.loginUrl && config.credentials) {
-            reAuthCount++;
-            console.log(`[crawl] Session expired, re-authenticating (${reAuthCount}/${MAX_REAUTHS})...`);
-            await broadcastProgress(config.jobId, "info", `Session expired, re-authenticating...`);
-            const reauthed = await authenticate(stagehand, page, config.loginUrl, config.credentials);
-            if (!reauthed) {
-              errors.push({ featureId: feature.id, action: "re-auth", error: "Re-authentication failed" });
+            // Check page health
+            const healthIssue = await checkPageHealth(page);
+            if (healthIssue) {
+              console.log(`[crawl] Skipped ${feature.name}: ${healthIssue}`);
+              await broadcastProgress(config.jobId, "info", `Skipped ${feature.name}: ${healthIssue}`);
               return;
             }
-            // Retry navigation
-            await page.goto(fullUrl, { waitUntil: "domcontentloaded", timeoutMs: PAGE_TIMEOUT_MS });
-            await waitForSettle(page);
-          } else if (hasLoginFields) {
-            errors.push({ featureId: feature.id, action: "navigate", error: "Session expired, re-auth cap reached" });
-            return;
-          }
-        }
 
-        // Find code context for this route
-        const routeInfo = config.crawlPlan.routes.find(
-          (r) => feature.route && r.path === feature.route,
-        );
-        const codeContext = routeInfo
-          ? {
-              component: routeInfo.component,
-              fields: routeInfo.fields,
-              modals: routeInfo.modals,
-              permissions: routeInfo.permissions,
-              apiCalls: routeInfo.apiCalls,
+            // Check for session expiry
+            const currentUrl = page.url();
+            if (isRedirectedToLogin(currentUrl, config.loginUrl)) {
+              const hasLoginFields = await hasActualLoginForm(page);
+              if (hasLoginFields && reAuthCount < MAX_REAUTHS && config.loginUrl && config.credentials) {
+                reAuthCount++;
+                console.log(`[crawl] Session expired, re-authenticating (${reAuthCount}/${MAX_REAUTHS})...`);
+                await broadcastProgress(config.jobId, "info", `Session expired, re-authenticating...`);
+                const reauthed = await authenticate(stagehand, page, config.loginUrl, config.credentials);
+                if (!reauthed) {
+                  errors.push({ featureId: feature.id, action: "re-auth", error: "Re-authentication failed" });
+                  return;
+                }
+                // Retry navigation
+                await page.goto(fullUrl, { waitUntil: "domcontentloaded", timeoutMs: PAGE_TIMEOUT_MS });
+                await waitForSettle(page);
+              } else if (hasLoginFields) {
+                errors.push({ featureId: feature.id, action: "navigate", error: "Session expired, re-auth cap reached" });
+                return;
+              }
             }
-          : null;
 
-        // --- Wait for initial page load ---
-        const external = isExternalApp(config.appUrl);
-        await page.evaluate(() => (globalThis as any).window.scrollTo(0, 0));
-        await new Promise((r) => setTimeout(r, external ? 5000 : 2000));
+            // Find code context for this route
+            const routeInfo = config.crawlPlan.routes.find(
+              (r) => feature.route && r.path === feature.route,
+            );
+            const codeContext = routeInfo
+              ? {
+                component: routeInfo.component,
+                fields: routeInfo.fields,
+                modals: routeInfo.modals,
+                permissions: routeInfo.permissions,
+                apiCalls: routeInfo.apiCalls,
+              }
+              : null;
 
-        // --- Dismiss overlays before hero screenshot ---
-        try {
-          await stagehand.act("Close any cookie banner, popup, notification, or overlay blocking the main content", { timeout: 5000 });
-        } catch { /* no overlay */ }
+            // --- Wait for initial page load ---
+            const external = isExternalApp(config.appUrl);
+            await page.evaluate(() => (globalThis as any).window.scrollTo(0, 0));
+            await new Promise((r) => setTimeout(r, external ? 5000 : 2000));
 
-        // --- Wait for content to load (with loading screen retry) ---
-        for (let attempt = 0; attempt < 3; attempt++) {
-          if (!await isPageLoading(page)) break;
-          console.log(`[crawl] Loading detected for ${feature.name} (attempt ${attempt + 1}/3). Waiting 5s...`);
-          await new Promise((r) => setTimeout(r, 5000));
-        }
-
-        // --- HERO screenshot: default state of the page ---
-        await broadcastProgress(config.jobId, "info", `Capturing ${feature.name} — default view`);
-        const heroResult = await captureScreen(page, config.jobId, {
-          featureId: feature.id,
-          featureSlug: feature.slug,
-          screenshotLabel: "hero",
-          navPath: feature.name,
-          screenType: "page",
-          codeContext,
-          orderIndex,
-          broadcastLabel: `${feature.name} — default view`,
-          descriptiveFilename: `${feature.slug}.png`,
-        });
-        if (heroResult) {
-          screens.push(heroResult.record);
-          orderIndex++;
-          const heroHashBuffer = await takeScreenshot(page);
-          globalScreenshotHashes.add(hashScreenshot(heroHashBuffer));
-        }
-
-        // --- AGENT EXPLORATION: autonomous page exploration + screenshot capture ---
-        if (screens.length < maxScreens) {
-          const heroBuffer = await takeScreenshot(page);
-          await broadcastProgress(config.jobId, "info", `Exploring ${feature.name}...`);
-
-          const agentResult = await agentFeatureCrawl(
-            stagehand,
-            page,
-            feature,
-            config.jobId,
-            codeContext,
-            heroBuffer,
-            orderIndex,
-            fullUrl,
-            config.appUrl,
-            globalScreenshotHashes,
-          );
-
-          screens.push(...agentResult.screens);
-          orderIndex += agentResult.screens.length;
-
-          // Store feature understanding for appUnderstanding
-          featureUnderstandings.push({
-            name: feature.name,
-            slug: feature.slug,
-            purpose: agentResult.understanding?.purpose ?? `${feature.name} page`,
-            userGoals: agentResult.understanding?.userGoals ?? [],
-            connectedFeatures: agentResult.understanding?.connectedFeatures ?? [],
-            screenshotDescriptions: agentResult.screenshotDescriptions,
-          });
-        }
-
-        // --- Sub-pages: if this is a grouped feature, visit each additional sub-page ---
-        if (feature.subPages && feature.subPages.length > 1) {
-          // First sub-page was already crawled above (it's the primary route)
-          for (let si = 1; si < feature.subPages.length; si++) {
-            if (screens.length >= maxScreens) break;
-
-            const subPage = feature.subPages[si];
-            const subUrl = subPage.route.startsWith("http")
-              ? subPage.route
-              : `${config.appUrl.replace(/\/$/, "")}${subPage.route}`;
-
-            console.log(`[crawl] Sub-page: ${subPage.name} (${si + 1}/${feature.subPages.length})`);
-            await broadcastProgress(config.jobId, "info", `Capturing ${feature.name} — ${subPage.name}`);
-
+            // --- Dismiss overlays before hero screenshot ---
             try {
-              await page.goto(subUrl, { waitUntil: "domcontentloaded", timeoutMs: PAGE_TIMEOUT_MS });
-              await waitForSettle(page);
-              await dismissOverlays(page, stagehand);
-              await waitForContentLoaded(page);
-              await page.evaluate(() => (globalThis as any).window.scrollTo(0, 0));
-              await new Promise((r) => setTimeout(r, 500));
+              await stagehand.act("Close any cookie banner, popup, notification, or overlay blocking the main content", { timeout: 5000 });
+            } catch { /* no overlay */ }
 
-              const subSlug = `${feature.slug}-${subPage.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")}`;
-              const subResult = await captureScreen(page, config.jobId, {
-                featureId: feature.id,
-                featureSlug: feature.slug,
-                screenshotLabel: subPage.name,
-                navPath: `${feature.name} > ${subPage.name}`,
-                screenType: "page",
-                codeContext: null,
-                orderIndex,
-                broadcastLabel: `${feature.name} — ${subPage.name}`,
-                descriptiveFilename: `${subSlug}.png`,
-              });
-              if (subResult) {
-                screens.push(subResult.record);
-                orderIndex++;
-              }
-
-              // Run agent exploration on sub-pages too
-              if (screens.length < maxScreens) {
-                const subHero = await takeScreenshot(page);
-                const subAgentResult = await agentFeatureCrawl(
-                  stagehand, page, { ...feature, name: subPage.name },
-                  config.jobId, null, subHero, orderIndex, subUrl, config.appUrl,
-                  globalScreenshotHashes,
-                );
-                screens.push(...subAgentResult.screens);
-                orderIndex += subAgentResult.screens.length;
-              }
-            } catch (err) {
-              console.log(`[crawl] Sub-page ${subPage.name} failed: ${err}`);
+            // --- Wait for content to load (with loading screen retry) ---
+            for (let attempt = 0; attempt < 3; attempt++) {
+              if (!await isPageLoading(page)) break;
+              console.log(`[crawl] Loading detected for ${feature.name} (attempt ${attempt + 1}/3). Waiting 5s...`);
+              await new Promise((r) => setTimeout(r, 5000));
             }
-          }
-        }
 
-        console.log(`[crawl] Feature "${feature.name}" complete`);
+            // --- HERO screenshot: default state of the page ---
+            await broadcastProgress(config.jobId, "info", `Capturing ${feature.name} — default view`);
+            const heroResult = await captureScreen(page, config.jobId, {
+              featureId: feature.id,
+              featureSlug: feature.slug,
+              screenshotLabel: "hero",
+              navPath: feature.name,
+              screenType: "page",
+              codeContext,
+              orderIndex,
+              broadcastLabel: `${feature.name} — default view`,
+              descriptiveFilename: `${feature.slug}.png`,
+            });
+            if (heroResult) {
+              screens.push(heroResult.record);
+              orderIndex++;
+              const heroHashBuffer = await takeScreenshot(page);
+              globalScreenshotHashes.add(hashScreenshot(heroHashBuffer));
+            }
+
+            // --- AGENT EXPLORATION: autonomous page exploration + screenshot capture ---
+            if (screens.length < maxScreens) {
+              const heroBuffer = await takeScreenshot(page);
+              await broadcastProgress(config.jobId, "info", `Exploring ${feature.name}...`);
+
+              const agentResult = await agentFeatureCrawl(
+                stagehand,
+                page,
+                feature,
+                config.jobId,
+                codeContext,
+                heroBuffer,
+                orderIndex,
+                fullUrl,
+                config.appUrl,
+                globalScreenshotHashes,
+              );
+
+              screens.push(...agentResult.screens);
+              orderIndex += agentResult.screens.length;
+
+              // Store feature understanding for appUnderstanding
+              featureUnderstandings.push({
+                name: feature.name,
+                slug: feature.slug,
+                purpose: agentResult.understanding?.purpose ?? `${feature.name} page`,
+                userGoals: agentResult.understanding?.userGoals ?? [],
+                connectedFeatures: agentResult.understanding?.connectedFeatures ?? [],
+                screenshotDescriptions: agentResult.screenshotDescriptions,
+              });
+            }
+
+            // --- Sub-pages: if this is a grouped feature, visit each additional sub-page ---
+            if (feature.subPages && feature.subPages.length > 1) {
+              // First sub-page was already crawled above (it's the primary route)
+              for (let si = 1; si < feature.subPages.length; si++) {
+                if (screens.length >= maxScreens) break;
+
+                const subPage = feature.subPages[si];
+                const subUrl = subPage.route.startsWith("http")
+                  ? subPage.route
+                  : `${config.appUrl.replace(/\/$/, "")}${subPage.route}`;
+
+                console.log(`[crawl] Sub-page: ${subPage.name} (${si + 1}/${feature.subPages.length})`);
+                await broadcastProgress(config.jobId, "info", `Capturing ${feature.name} — ${subPage.name}`);
+
+                try {
+                  await page.goto(subUrl, { waitUntil: "domcontentloaded", timeoutMs: PAGE_TIMEOUT_MS });
+                  await waitForSettle(page);
+                  await dismissOverlays(page, stagehand);
+                  await waitForContentLoaded(page);
+                  await page.evaluate(() => (globalThis as any).window.scrollTo(0, 0));
+                  await new Promise((r) => setTimeout(r, 500));
+
+                  const subSlug = `${feature.slug}-${subPage.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")}`;
+                  const subResult = await captureScreen(page, config.jobId, {
+                    featureId: feature.id,
+                    featureSlug: feature.slug,
+                    screenshotLabel: subPage.name,
+                    navPath: `${feature.name} > ${subPage.name}`,
+                    screenType: "page",
+                    codeContext: null,
+                    orderIndex,
+                    broadcastLabel: `${feature.name} — ${subPage.name}`,
+                    descriptiveFilename: `${subSlug}.png`,
+                  });
+                  if (subResult) {
+                    screens.push(subResult.record);
+                    orderIndex++;
+                  }
+
+                  // Run agent exploration on sub-pages too
+                  if (screens.length < maxScreens) {
+                    const subHero = await takeScreenshot(page);
+                    const subAgentResult = await agentFeatureCrawl(
+                      stagehand, page, { ...feature, name: subPage.name },
+                      config.jobId, null, subHero, orderIndex, subUrl, config.appUrl,
+                      globalScreenshotHashes,
+                    );
+                    screens.push(...subAgentResult.screens);
+                    orderIndex += subAgentResult.screens.length;
+                  }
+                } catch (err) {
+                  console.log(`[crawl] Sub-page ${subPage.name} failed: ${err}`);
+                }
+              }
+            }
+
+            console.log(`[crawl] Feature "${feature.name}" complete`);
           })(), // end of async IIFE
           new Promise<void>((_, reject) =>
             setTimeout(() => reject(new Error(`Feature timeout after ${FEATURE_TIMEOUT_MS / 1000}s`)), FEATURE_TIMEOUT_MS),
