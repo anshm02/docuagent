@@ -87,7 +87,7 @@ export default function LandingPage() {
               </Link>
             </div>
             <p className="text-xs text-gray-500">
-              One free documentation run &middot; No credit card required
+              One free documentation run
             </p>
           </div>
         </div>
@@ -121,11 +121,10 @@ export default function LandingPage() {
                       (item, i) => (
                         <div
                           key={item}
-                          className={`px-2 py-1.5 rounded-md text-xs ${
-                            i === 2
-                              ? "bg-blue-600/20 text-blue-400 font-medium"
-                              : "text-gray-500"
-                          }`}
+                          className={`px-2 py-1.5 rounded-md text-xs ${i === 2
+                            ? "bg-blue-600/20 text-blue-400 font-medium"
+                            : "text-gray-500"
+                            }`}
                         >
                           {item}
                         </div>
@@ -178,9 +177,8 @@ export default function LandingPage() {
                       (item, i) => (
                         <p
                           key={item}
-                          className={`text-xs ${
-                            i === 0 ? "text-white font-medium" : "text-gray-500"
-                          }`}
+                          className={`text-xs ${i === 0 ? "text-white font-medium" : "text-gray-500"
+                            }`}
                         >
                           {item}
                         </p>
@@ -242,7 +240,7 @@ export default function LandingPage() {
               <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
               <input
                 type="email"
-                placeholder="you@example.com"
+                placeholder="Your email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="glass-input pl-10 text-sm"

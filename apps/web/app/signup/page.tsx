@@ -210,7 +210,7 @@ export default function SignupPage() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="glass-input text-sm"
-                  placeholder="you@example.com"
+                  placeholder="Your email"
                 />
               </div>
 

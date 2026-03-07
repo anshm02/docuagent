@@ -104,7 +104,7 @@ function LoginForm() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="glass-input text-sm"
-                  placeholder="you@example.com"
+                  placeholder="Your email"
                 />
               </div>
 
@@ -152,7 +152,7 @@ function LoginForm() {
               href="/signup"
               className="text-blue-400 hover:text-blue-300 transition-colors"
             >
-              Create one for free
+              Sign up
             </a>
           </p>
         </div>
