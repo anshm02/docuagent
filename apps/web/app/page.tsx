@@ -78,7 +78,7 @@ export default function LandingPage() {
 
           <div className="mt-8 flex flex-col items-center gap-3">
             <div className="flex items-center gap-4">
-              <Link href="/login" className="btn-primary text-sm">
+              <Link href="/signup" className="btn-primary text-sm">
                 Try for free
                 <span aria-hidden="true">&rarr;</span>
               </Link>

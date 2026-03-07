@@ -1,7 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-const publicRoutes = ["/", "/login", "/signup"];
+const publicRoutes = ["/login", "/signup"];
 
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
@@ -33,13 +33,35 @@ export async function middleware(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
 
-  // Allow public routes
-  if (publicRoutes.includes(pathname)) {
+  // Allow auth callback
+  if (pathname.startsWith("/auth/")) {
     return supabaseResponse;
   }
 
-  // Allow auth callback
-  if (pathname.startsWith("/auth/")) {
+  // Landing page: if user is logged in, redirect to their latest job or /new
+  if (pathname === "/") {
+    if (user) {
+      const { data: jobs } = await supabase
+        .from("jobs")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("status", "completed")
+        .order("created_at", { ascending: false })
+        .limit(1);
+
+      const url = request.nextUrl.clone();
+      if (jobs && jobs.length > 0) {
+        url.pathname = `/jobs/${jobs[0].id}`;
+      } else {
+        url.pathname = "/new";
+      }
+      return NextResponse.redirect(url);
+    }
+    return supabaseResponse;
+  }
+
+  // Allow public routes for unauthenticated users
+  if (publicRoutes.includes(pathname)) {
     return supabaseResponse;
   }
 
